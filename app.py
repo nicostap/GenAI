@@ -1,4 +1,4 @@
-import streamlit as st
+ import streamlit as st
 from llama_index.llms.ollama import Ollama
 from pathlib import Path
 import qdrant_client
@@ -51,8 +51,8 @@ class Chatbot:
             index = VectorStoreIndex.from_documents(documents)
         return index
 
-    def create_query_engine(_arg, index):
-        return index.as_query_engine(chat_mode="condense_plus_context", verbose=True)
+    def create_chat_engine(_arg, index):
+        return index.as_chat_engine(chat_mode="condense_plus_context", verbose=True)
 
 
 
@@ -90,7 +90,7 @@ if prompt := st.chat_input("What is up?"):
     st.session_state.messages.append({"role": "user", "content": prompt})
 
     with st.chat_message("assistant"):
-        response = chatbot.query_engine.query(prompt)
+        response = chatbot.chat_engine.chat(prompt)
         st.markdown(response.response)
 
     # Add user message to chat history
