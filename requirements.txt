@@ -6,3 +6,6 @@ llama-index-vector-stores-qdrant
 qdrant_client
 fastembed
 streamlit==1.32.2
+pdfplumber
+tqdm
+os
