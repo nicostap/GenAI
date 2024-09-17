@@ -1,4 +1,4 @@
- import streamlit as st
+import streamlit as st
 from llama_index.llms.ollama import Ollama
 from pathlib import Path
 import qdrant_client
@@ -24,8 +24,8 @@ class Chatbot:
         # Indexing
         self.index = self.load_data()
 
-        # Query Engine
-        self.query_engine = self.create_query_engine(self.index)
+        # Chat Engine
+        self.chat_engine = self.create_chat_engine(self.index)
 
     def set_setting(_arg, llm, embedding_model):
         Settings.llm = Ollama(model=llm, base_url="http://127.0.0.1:11434")
