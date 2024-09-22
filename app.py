@@ -25,19 +25,19 @@ class Chatbot:
     def __init__(self, llm="llama3.1:latest", embedding_model="jinaai/jina-embeddings-v2-base-code", vector_store=None):
         self.Settings = self.set_setting(llm, embedding_model)
 
-        storage_context = StorageContext.from_defaults(
-            docstore=SimpleDocumentStore.from_persist_dir(persist_dir="./persist"),
-            vector_store=SimpleVectorStore.from_persist_dir(
-                persist_dir="./persist"
-            ),
-            index_store=SimpleIndexStore.from_persist_dir(persist_dir="./persist"),
-        )
-        self.index = load_index_from_storage(storage_context)
+        # storage_context = StorageContext.from_defaults(
+        #     docstore=SimpleDocumentStore.from_persist_dir(persist_dir="./persist"),
+        #     vector_store=SimpleVectorStore.from_persist_dir(
+        #         persist_dir="./persist"
+        #     ),
+        #     index_store=SimpleIndexStore.from_persist_dir(persist_dir="./persist"),
+        # )
+        # self.index = load_index_from_storage(storage_context)
 
         self.memory = self.create_memory()
 
-        # self.index = self.load_data('./docs')
-        # self.index.storage_context.persist(persist_dir="./persist")
+        self.index = self.load_data('./docs')
+        self.index.storage_context.persist(persist_dir="./persist")
 
         self.chat_engine = self.create_chat_engine(self.index)
 
