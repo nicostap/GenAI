@@ -1,148 +1,141 @@
 import streamlit as st
+import nest_asyncio
 from llama_index.llms.ollama import Ollama
-from pathlib import Path
-import qdrant_client
-from llama_index.core import SimpleDirectoryReader, VectorStoreIndex, Settings, Document, load_index_from_storage
-from llama_index.vector_stores.qdrant import QdrantVectorStore
-from llama_index.embeddings.fastembed import FastEmbedEmbedding
-from llama_index.core.retrievers import VectorIndexRetriever
-from llama_index.core.query_engine import RetrieverQueryEngine
-from llama_index.core.response_synthesizers import get_response_synthesizer
-from llama_index.core.node_parser import SimpleNodeParser
-from llama_index.core.storage.docstore import SimpleDocumentStore
-from llama_index.core.vector_stores import SimpleVectorStore
-from llama_index.core.storage.index_store import SimpleIndexStore
-from llama_index.core import StorageContext
-from llama_index.core.chat_engine import CondensePlusContextChatEngine
-from llama_index.core.llms import ChatMessage
-from llama_index.core.storage.chat_store import SimpleChatStore
+from llama_index.embeddings.ollama import OllamaEmbedding
+from llama_index.core import PromptTemplate, Settings
 from llama_index.core.memory import ChatMemoryBuffer
-import pdfplumber
-import os
-import fitz
+from llama_index.core.agent import ReActAgent
+from llama_index.core.tools import BaseTool, FunctionTool
+from llama_index.core.llms import ChatMessage, MessageRole
+from typing import Optional
+from api import search_publications_serpapi
 
-class Chatbot:
-    def __init__(self, llm="llama3.1:latest", embedding_model="intfloat/multilingual-e5-large", vector_store=None):
-        self.Settings = self.set_setting(llm, embedding_model)
+nest_asyncio.apply()
+st.set_page_config(
+    page_title="Publication Finder Bot",
+    layout="wide",
+)
 
-        storage_context = StorageContext.from_defaults(
-            docstore=SimpleDocumentStore.from_persist_dir(persist_dir="./persist"),
-            vector_store=SimpleVectorStore.from_persist_dir(
-                persist_dir="./persist"
-            ),
-            index_store=SimpleIndexStore.from_persist_dir(persist_dir="./persist"),
-        )
-        self.index = load_index_from_storage(storage_context)
+system_prompt = """
+## Instruction
+If the user asks a question the you already know the answer to OR the user is making idle banter, just respond without calling any tools.
+DO THIS :
+1. Giving list of publications's title and year.
+2. Giving full detail of a publication including year, link, author, cited count, etc.
+DO NOT DO THIS :
+1. Summarizing.
+2. Doing things outside of giving publications or publication's detail.
+3. Not giving titles of publication.
+4. Only giving topic.
+5. Not giving any details.
+"""
 
-        self.memory = self.create_memory()
+react_context = """
+You are a publication finder magician with access to all of the academic publications on earth. You help users find the publications they needed for their research.
+If you don't know the answer, say you DON'T KNOW.
 
-        # self.index = self.load_data('./docs')
-        # self.index.storage_context.persist(persist_dir="./persist")
+## Instruction
+DO THIS :
+1. Giving list of publications's title. author and year.
+2. Giving additional detail of a publication if the user requested it.
+DO NOT DO THIS :
+1. Summarizing.
+2. Doing things outside of giving publications or publication's detail.
+3. Not giving titles of publication.
+4. Only giving topic.
+5. Not giving any details.
+"""
 
-        self.chat_engine = self.create_chat_engine(self.index)
+react_system_header_str = """
+## Tools
+You have access to a tool. You are responsible for using
+the tool with various keyword you deem appropriate to complete the task at hand.
+This may require coming up with a new keyword that will get you closer to the right result.
 
-    def set_setting(_arg, llm, embedding_model):
-        Settings.llm = Ollama(model=llm, base_url="http://127.0.0.1:11434")
-        Settings.embed_model = FastEmbedEmbedding(
-            model_name=embedding_model, cache_dir="./fastembed_cache")
-        Settings.system_prompt = """
-                                You are Roni, a multilingual relationship consultant bot trained on various research papers about love and relationships. When providing advice, communicate in a casual, conversational tone, using slang and expressions common to each language. Your responses should feel like talking to a friend, not an AI. Be brief, relatable, and adjust to each language’s modern vibe.
-                                You are always conscious of the research behind your advice, but you don’t explicitly reference the source in your answers. Instead, focus on providing clear and relevant insights that feel natural.
-                                Examples of how to adjust based on language:
-                                English: “Hey, I feel you. Relationships can be mad confusing, right? Sometimes it’s just about clear vibes and good convo.”
-                                Spanish: “Amiga, te entiendo. A veces, las relaciones son un lío, pero todo es cuestión de buena vibra y comunicación.”
-                                French: “T’inquiète, c’est normal. Les relations, c’est compliqué, mais ça se joue surtout sur les bonnes ondes et la façon de parler.”
-                                Portuguese: “Mano, tranquilo. Relacionamento às vezes é uma confusão, mas com boas vibes e conversa, rola fácil.”
-                                Indonesian: “Bro, gue paham banget. Kadang hubungan tuh emang ribet, tapi kuncinya komunikasi biar vibes-nya tetap asik.”
-                                """
-        return Settings
+You have access to the following tools:
+search_publications_serpapi
 
-    def create_chat_engine(self, index):
-        return CondensePlusContextChatEngine(
-            verbose=True,
-            memory=self.memory,
-            retriever=index.as_retriever(),
-            llm=Settings.llm
-        )
+## Output Format
+To answer the question, please use the following format.
 
-    def extract_text_from_pdf(self, pdf_path):
-        text = ""
-        pdf_document = fitz.open(pdf_path)
-        for page_num in range(pdf_document.page_count):
-            page = pdf_document.load_page(page_num)
-            text += page.get_text()
-        pdf_document.close()
-        return text
+```
+Thought: I need to use a tool to help me answer the question.
+Action: tool name (one of {tool_names}) if using a tool.
+Action Input: the input to the tool, in a JSON format representing the kwargs (e.g. {{"keyword": "Kualitas sungai", "language_code": "id"}})
+```
 
-    def split_text_into_chunks(self, text, chunk_size=2000):
-        return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
+Please ALWAYS start with a Thought.
 
-    def create_index_from_text(self, text_chunks):
-        # Create documents and add them to the index
-        documents = [Document(text=chunk) for chunk in text_chunks]
-        parser = SimpleNodeParser.from_defaults(chunk_size=200)
-        nodes = parser.get_nodes_from_documents(documents)
-        index = VectorStoreIndex(nodes)
+Please use a valid JSON format for the Action Input. Do NOT do this {{'keyword': 'Kualitas sungai', 'language_code': 'id'}}.
 
-        return index
+If this format is used, the user will respond in the following format:
 
-    def process_pdfs_in_directory(self, directory_path):
-        """Process all PDFs in the specified directory and create an index."""
-        all_text_chunks = []
+```
+Observation: tool response
+```
 
-        for filename in os.listdir(directory_path):
-            if filename.endswith(".pdf"):
-                pdf_path = os.path.join(directory_path, filename)
-                print(f"Processing {filename}...")
+You should keep repeating the above format until you have enough information
+to answer the question without using any more tools. At that point, you MUST respond
+in the one of the following two formats:
 
-                # Extract text from PDF
-                text = self.extract_text_from_pdf(pdf_path)
+```
+Thought: I can answer without using any more tools.
+Answer: [your answer here]
+```
 
-                # Split the text into chunks
-                text_chunks = self.split_text_into_chunks(text)
+```
+Thought: I cannot answer the question with the provided tools.
+Answer: Sorry, I cannot answer your query. Here's the closest result I can find [your answer here]
+```
 
-                # Add text chunks to the list
-                all_text_chunks.extend(text_chunks)
+## Additional Rules
+- You MUST obey the function signature of each tool. Do NOT pass in no arguments if the function expects arguments.
+- Use the language_code from the language the user is speaking.
+- If you can not answer the query, provide the closest answer you can find.
 
-        # Create the index from all text chunks
-        index = self.create_index_from_text(all_text_chunks)
-        return index
+## Current Conversation
+Below is the current conversation consisting of interleaving human and assistant messages.
 
-    def load_data(self, directory_path):
-        with st.spinner(text="Loading and indexing – hang tight! This should take a few minutes."):
-            index = self.process_pdfs_in_directory(directory_path)
-            return index
+"""
 
-    def create_memory(self):
-        self.chat_store = SimpleChatStore()
-        return ChatMemoryBuffer.from_defaults(chat_store=self.chat_store, chat_store_key="chat_history", token_limit=16000)
+react_system_prompt = PromptTemplate(react_system_header_str)
 
-    def set_chat_history(self, messages):
-        self.chat_history = [ChatMessage(role=message["role"], content=message["content"]) for message in messages]
-        self.chat_store.store = {"chat_history": self.chat_history}
+Settings.llm = Ollama(model="llama3.1:8b-instruct-q4_0", base_url="http://127.0.0.1:11434", system_prompt=system_prompt, temperature=0)
+Settings.embed_model = OllamaEmbedding(base_url="http://127.0.0.1:11434", model_name="mxbai-embed-large:latest")
 
+search_publications_tool = FunctionTool.from_defaults(async_fn=search_publications_serpapi)
+tools = [search_publications_tool]
 
-st.title("Relationship Consultation with Roni")
+chat_engine = ReActAgent.from_tools(
+    tools,
+    chat_mode="react",
+    verbose=True,
+    react_system_prompt=react_system_prompt,
+    llm=Settings.llm,
+    context=react_context,
+    max_iterations=100,
+)
 
+# Main Program
+st.title("Publication Finder Bot")
 
-chatbot = Chatbot()
-
+# Initialize chat history if empty
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant",
-         "content": "Hello there 👋!\n\n Good to see you, my name is Roni. Feel free to ask me anything regarding relationship 😁"}
+        {
+            "role": "assistant",
+            "content": "Hello! How can I help you find academic publications today?",
+        }
     ]
 
-print(chatbot.chat_store.store)
-
+# Display chat messages from history on app rerun
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-chatbot.set_chat_history(st.session_state.messages)
-
-if prompt := st.chat_input("What is up?"):
-    # Display user message in chat message container
+# Chat input from user
+if prompt := st.chat_input("What are you looking for?"):
+    # Display user message
     with st.chat_message("user"):
         st.markdown(prompt)
 
@@ -150,9 +143,11 @@ if prompt := st.chat_input("What is up?"):
     st.session_state.messages.append({"role": "user", "content": prompt})
 
     with st.chat_message("assistant"):
-        response = chatbot.chat_engine.chat(prompt)
-        st.markdown(response.response)
+        with st.spinner("Loading..."):
+            response_stream = chat_engine.stream_chat(prompt)
+            st.write_stream(response_stream.response_gen)
 
-    # Add user message to chat history
+    # Add assistant response to chat history
     st.session_state.messages.append(
-        {"role": "assistant", "content": response.response})
+        {"role": "assistant", "content": response_stream.response}
+    )
