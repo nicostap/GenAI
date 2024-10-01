@@ -8,52 +8,38 @@ from llama_index.core.agent import ReActAgent
 from llama_index.core.tools import BaseTool, FunctionTool
 from llama_index.core.llms import ChatMessage, MessageRole
 from typing import Optional
-from api import search_publications_serpapi
+from api import search_publications_serpapi, search_publications_scholarly
 
 nest_asyncio.apply()
 st.set_page_config(
     page_title="Publication Finder Bot",
-    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-system_prompt = """
-## Instruction
-If the user asks a question the you already know the answer to OR the user is making idle banter, just respond without calling any tools.
-DO THIS :
-1. Giving list of publications's title and year.
-2. Giving full detail of a publication including year, link, author, cited count, etc.
-DO NOT DO THIS :
-1. Summarizing.
-2. Doing things outside of giving publications or publication's detail.
-3. Not giving titles of publication.
-4. Only giving topic.
-5. Not giving any details.
-"""
-
 react_context = """
-You are a publication finder magician with access to all of the academic publications on earth. You help users find the publications they needed for their research.
-If you don't know the answer, say you DON'T KNOW.
+You are a publication finder magician with access to all of the academic publications on earth. You help users find the publication they needed for their research.
 
 ## Instruction
 DO THIS :
-1. Giving list of publications's title. author and year.
-2. Giving additional detail of a publication if the user requested it.
+1. GIVING list of publications's title, url, publication info and cited by count.
+2. If the user asks a question the you already know the answer to OR the user is making idle banter, just respond without calling any tools.
+3. If you don't know the answer, say you DON'T KNOW.
 DO NOT DO THIS :
-1. Summarizing.
-2. Doing things outside of giving publications or publication's detail.
-3. Not giving titles of publication.
-4. Only giving topic.
-5. Not giving any details.
+1. SUMMARIZING your findings.
+2. NOT giving publications or publication's detail.
+3. NOT giving titles.
+4. ONLY giving topic.
+5. ANSWERING the user's need yourself.
 """
 
 react_system_header_str = """
 ## Tools
-You have access to a tool. You are responsible for using
-the tool with various keyword you deem appropriate to complete the task at hand.
-This may require coming up with a new keyword that will get you closer to the right result.
+You have access to two tools. You are responsible for experimenting
+with the tools using various keyword you deem appropriate to complete the task at hand.
+This may require coming up with a new keyword that will get you closer to the right result multiple times.
 
 You have access to the following tools:
-search_publications_serpapi
+search_publications_serpapi, search_publications_scholarly
 
 ## Output Format
 To answer the question, please use the following format.
@@ -91,7 +77,8 @@ Answer: Sorry, I cannot answer your query. Here's the closest result I can find 
 ## Additional Rules
 - You MUST obey the function signature of each tool. Do NOT pass in no arguments if the function expects arguments.
 - Use the language_code from the language the user is speaking.
-- If you can not answer the query, provide the closest answer you can find.
+- You MUST NOT summarize your findings.
+- You MUST NOT act outside of your context.
 
 ## Current Conversation
 Below is the current conversation consisting of interleaving human and assistant messages.
@@ -100,11 +87,11 @@ Below is the current conversation consisting of interleaving human and assistant
 
 react_system_prompt = PromptTemplate(react_system_header_str)
 
-Settings.llm = Ollama(model="llama3.1:8b-instruct-q4_0", base_url="http://127.0.0.1:11434", system_prompt=system_prompt, temperature=0)
-Settings.embed_model = OllamaEmbedding(base_url="http://127.0.0.1:11434", model_name="mxbai-embed-large:latest")
+Settings.llm = Ollama(model="llama3.1:8b-instruct-q4_0", base_url="http://127.0.0.1:11434", temperature=0, prompt_key=react_context)
 
-search_publications_tool = FunctionTool.from_defaults(async_fn=search_publications_serpapi)
-tools = [search_publications_tool]
+search_publications_tool_serpapi = FunctionTool.from_defaults(async_fn=search_publications_serpapi)
+search_publications_tool_scholarly = FunctionTool.from_defaults(async_fn=search_publications_scholarly)
+tools = [search_publications_tool_serpapi, search_publications_tool_scholarly]
 
 chat_engine = ReActAgent.from_tools(
     tools,
@@ -117,7 +104,8 @@ chat_engine = ReActAgent.from_tools(
 )
 
 # Main Program
-st.title("Publication Finder Bot")
+st.title("📚 Publication Finder Bot")
+st.markdown("Your personal assistant to help you discover academic publications efficiently.")
 
 # Initialize chat history if empty
 if "messages" not in st.session_state:
