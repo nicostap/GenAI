@@ -1,113 +1,17 @@
+import re
 import streamlit as st
-import nest_asyncio
-from llama_index.llms.ollama import Ollama
-from llama_index.embeddings.ollama import OllamaEmbedding
-from llama_index.core import PromptTemplate, Settings
-from llama_index.core.memory import ChatMemoryBuffer
-from llama_index.core.agent import ReActAgent
-from llama_index.core.tools import BaseTool, FunctionTool
-from llama_index.core.llms import ChatMessage, MessageRole
-from typing import Optional
-from api import search_publications_serpapi, search_publications_scholarly
+from scholarly import scholarly
+from collections import deque
+from bot import InputBot, FetchBot, OutputBot
+from llama_index.core import Document
 
-nest_asyncio.apply()
+
+# Initialize everything
 st.set_page_config(
     page_title="Publication Finder Bot",
-    initial_sidebar_state="expanded",
 )
-
-react_context = """
-You are a publication finder magician with access to all of the academic publications on earth. You help users find the publication they needed for their research.
-
-## Instruction
-DO THIS :
-1. GIVING list of publications's title, url, publication info and cited by count.
-2. If the user asks a question the you already know the answer to OR the user is making idle banter, just respond without calling any tools.
-3. If you don't know the answer, say you DON'T KNOW.
-DO NOT DO THIS :
-1. SUMMARIZING your findings.
-2. NOT giving publications or publication's detail.
-3. NOT giving titles.
-4. ONLY giving topic.
-5. ANSWERING the user's need yourself.
-"""
-
-react_system_header_str = """
-## Tools
-You have access to two tools. You are responsible for experimenting
-with the tools using various keyword you deem appropriate to complete the task at hand.
-This may require coming up with a new keyword that will get you closer to the right result multiple times.
-
-You have access to the following tools:
-search_publications_serpapi, search_publications_scholarly
-
-## Output Format
-To answer the question, please use the following format.
-
-```
-Thought: I need to use a tool to help me answer the question.
-Action: tool name (one of {tool_names}) if using a tool.
-Action Input: the input to the tool, in a JSON format representing the kwargs (e.g. {{"keyword": "Kualitas sungai", "language_code": "id"}})
-```
-
-Please ALWAYS start with a Thought.
-
-Please use a valid JSON format for the Action Input. Do NOT do this {{'keyword': 'Kualitas sungai', 'language_code': 'id'}}.
-
-If this format is used, the user will respond in the following format:
-
-```
-Observation: tool response
-```
-
-You should keep repeating the above format until you have enough information
-to answer the question without using any more tools. At that point, you MUST respond
-in the one of the following two formats:
-
-```
-Thought: I can answer without using any more tools.
-Answer: [your answer here]
-```
-
-```
-Thought: I cannot answer the question with the provided tools.
-Answer: Sorry, I cannot answer your query. Here's the closest result I can find [your answer here]
-```
-
-## Additional Rules
-- You MUST obey the function signature of each tool. Do NOT pass in no arguments if the function expects arguments.
-- Use the language_code from the language the user is speaking.
-- You MUST NOT summarize your findings.
-- You MUST NOT act outside of your context.
-
-## Current Conversation
-Below is the current conversation consisting of interleaving human and assistant messages.
-
-"""
-
-react_system_prompt = PromptTemplate(react_system_header_str)
-
-Settings.llm = Ollama(model="llama3.1:8b-instruct-q4_0", base_url="http://127.0.0.1:11434", temperature=0, prompt_key=react_context)
-
-search_publications_tool_serpapi = FunctionTool.from_defaults(async_fn=search_publications_serpapi)
-search_publications_tool_scholarly = FunctionTool.from_defaults(async_fn=search_publications_scholarly)
-tools = [search_publications_tool_serpapi, search_publications_tool_scholarly]
-
-chat_engine = ReActAgent.from_tools(
-    tools,
-    chat_mode="react",
-    verbose=True,
-    react_system_prompt=react_system_prompt,
-    llm=Settings.llm,
-    context=react_context,
-    max_iterations=100,
-)
-
-# Main Program
-st.title("📚 Publication Finder Bot")
-st.markdown("Your personal assistant to help you discover academic publications efficiently.")
-
-# Initialize chat history if empty
+if "memory" not in st.session_state:
+    st.session_state.track_index = deque()
 if "messages" not in st.session_state:
     st.session_state.messages = [
         {
@@ -115,6 +19,73 @@ if "messages" not in st.session_state:
             "content": "Hello! How can I help you find academic publications today?",
         }
     ]
+if "input_bot" not in st.session_state:
+    st.session_state.input_bot = InputBot()
+if "output_bot" not in st.session_state:
+    st.session_state.output_bot = OutputBot()
+
+# Special dependencies
+def title_to_variable(title):
+    title = title.lower()
+    title = title.replace(" ", "_")
+    title = re.sub(r'[^a-z0-9_]', '', title)
+    return title
+
+async def search_publications(keyword: str) -> str:
+    """Searches Google Scholar for publications based on the keyword given."""
+
+    # Initialize search query
+    search_query = scholarly.search_pubs(keyword)
+
+    # Prepare output
+    output = f"# Publication Search Results for '{keyword}'\n"
+
+    # Iterate over search results, limiting to the first 20
+    for i in range(10):
+        try:
+            result = next(search_query)
+        except StopIteration:
+            break  # No more results
+
+        # Extracting information from the result
+        title = result['bib'].get('title', 'No title')
+        author = ", ".join(result['bib'].get('author', ['Unknown author']))
+        pub_year = result['bib'].get('pub_year', 'Unknown year')
+        venue = result['bib'].get('venue', 'Unknown venue')
+        pub_info = f"{author}, {pub_year}, {venue}"
+        abstract = result['bib'].get('abstract', 'No description available')
+        cited_by_count = result.get('num_citations', 'Unknown')
+        link = result.get('pub_url', 'No link available')
+
+        # Constructing the output
+        result = (
+            f"   *Title:* {title}\n"
+            f"   *Link:* {link}\n"
+            f"   *Abstract:* {abstract}\n"
+            f"   *Publication info:* {pub_info}\n"
+            f"   *Cited by:* {cited_by_count}\n\n"
+        )
+        output += result
+
+        # To be used as context
+        doc_id = title_to_variable(title)
+        doc = Document(text=result, id_=doc_id)
+        st.session_state.output_bot.index.insert(doc)
+        st.session_state.track_index.append(doc_id)
+
+        # If context is full, pop old ones
+        if len(st.session_state.track_index) > 200:
+            old_doc_id = st.session_state.track_index.popLeft()
+            st.session_state.output_bot.index.delete_ref_doc(old_doc_id, delete_from_docstore=True)
+
+    return output
+
+if "fetch_bot" not in st.session_state:
+    st.session_state.fetch_bot = FetchBot([search_publications])
+
+# Main Program
+st.title("📚 Publication Finder Bot")
+st.markdown("Your personal assistant to help you discover academic publications efficiently.")
 
 # Display chat messages from history on app rerun
 for message in st.session_state.messages:
@@ -122,7 +93,7 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 # Chat input from user
-if prompt := st.chat_input("What are you looking for?"):
+if prompt := st.chat_input("What is up?"):
     # Display user message
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -132,10 +103,11 @@ if prompt := st.chat_input("What are you looking for?"):
 
     with st.chat_message("assistant"):
         with st.spinner("Loading..."):
-            response_stream = chat_engine.stream_chat(prompt)
-            st.write_stream(response_stream.response_gen)
+            fetch_query = st.session_state.input_bot.return_response(prompt)
 
-    # Add assistant response to chat history
-    st.session_state.messages.append(
-        {"role": "assistant", "content": response_stream.response}
-    )
+            thought_process = st.session_state.fetch_bot.process(fetch_query)
+
+            response_stream = st.session_state.output_bot.return_response(prompt)
+            st.markdown(response_stream)
+
+    st.session_state.messages.append({"role": "assistant", "content": response_stream})
