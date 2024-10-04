@@ -9,3 +9,5 @@ streamlit==1.32.2
 pdfplumber
 tqdm
 PyMuPDF
+yFinance
+ta

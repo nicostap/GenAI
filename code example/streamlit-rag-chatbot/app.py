@@ -49,6 +49,7 @@ class Chatbot:
 
         if vector_store is None:
             index = VectorStoreIndex.from_documents(documents)
+        
         return index
 
     def create_query_engine(_arg, index):
