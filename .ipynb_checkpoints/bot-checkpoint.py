@@ -112,6 +112,7 @@ class FetchBot:
 
     def process(self, prompt_string):
         prompts = ast.literal_eval(prompt_string)
+        # prompts = re.findall(r'\"(.*?)\"', prompt_string)
         for prompt in prompts:
             return self.agent.chat(prompt)
 
@@ -124,7 +125,7 @@ class OutputBot:
                 1. You help users find the source they needed for an information.
                 2. Your task is to provide source's title for the user along with the source's detail (except for title) from your context.
                 3. If the user ask something else outside of searching publication, try to use your context to answer the user's question while providing the source or link of that context.
-                4. If the link provided is a video from YouTube, it must be displayed in embedded form.
+                4. You can also find and provide another related sources to the response. The related sources can be article, video, or image link2.
 
                 Here are the relevant documents filled with title, links and other details for your context: {context_str}
                 Answer the user quere here : {query_str} by following the instruction above.  

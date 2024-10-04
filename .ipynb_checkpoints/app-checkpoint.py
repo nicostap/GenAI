@@ -268,7 +268,7 @@ with st.sidebar.container():
         else:
             # Display as a regular link button
             st.link_button(match.group("domain"), link)
-        st.link_button(match.group("domain"), link)
+        # st.link_button(match.group("domain"), link)
 
 # Chat input from user
 if prompt := st.chat_input("What is up?"):
@@ -290,7 +290,7 @@ if prompt := st.chat_input("What is up?"):
             urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\), ]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', response)
             st.session_state.links.clear()
             st.session_state.links.extend(urls)
-            st.markdown(response)
+            st.markdown(response, unsafe_allow_html= True)
 
     st.session_state.messages.append({"role": "assistant", "content": response})
     st.rerun()
