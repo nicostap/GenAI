@@ -18,30 +18,32 @@ class InputBot:
         self.llm = Ollama(model="llama3.1:latest", base_url="http://127.0.0.1:11434", temperature=0, )
 
         self.header_prompt =  """
-                ## Instruction
-                1. Receive the user prompt.
-                1. Identify the language of the conversation from user's prompt : Determine the language the user is speaking.
-                2. Understand the user's prompt: Summarize what the user wants to know or ask into one or more topics.
-                3. Return the topics in the user's language in the form of list ["{topic1}", "{topic2}", ...]
+                Do these step below no matter what language the user is speaking
+                ## Instruction / Instruksi
+                1. Receive the user prompt. / Terima prompt pengguna.
+                1. Identify the language of the conversation from user's prompt, determine the language the user is speaking. / Tentukan bahasa yang digunakan pengguna.
+                2. Understand the user's prompt, summarize what the user wants to know or ask into one or more topics. / Pahami prompt pengguna dan rangkumkan menjadi topik.
+                3. Return the topics in the user's language in the format of python list such as ["Give me sources about {topic 1}", "Give me sources about {topic 2}", ...] / Berikan respon topik tersebut di menggunakan bahasa pengguna dalam format list python seperti ["Berikan saya sumber tentang {topik 1}", "Berikan saya sumber tentang {topik 2}", ...]
             """
 
     def return_response(self, prompt):
-        response = self.llm.complete(f"{self.header_prompter}\n{prompt}")
-        result = re.search('[(.*)]', response.content)
-        return result.group(1)
+        response = self.llm.complete(f"{self.header_prompt}\n{prompt}")
+        print(response.text)
+        return response.text[response.text.rfind("[") : response.text.rfind("]") + 1]
 
 class FetchBot:
     def __init__(self, input_methods):
         self.llm = Ollama(model="llama3.1:latest", base_url="http://127.0.0.1:11434", temperature=0)
         react_system_header_str = """
 
-            You are a publication finder magician with access to all of the academic publications on earth.
-            You help users find the publication they needed for their research.
+            You are designed to be able to search and access any information source such as publication papers.
+            Your role is to answer any request that the user have using the tools available.
 
             ## Tools
-            You have access to one tool. You are responsible for using the tool as many times as you deem
-            appropriate with different keywords in order to gather enough information so
-            that you can complete the task at hand.
+            You have access to a wide variety of tools. You are responsible for using
+            the tools in any sequence you deem appropriate to complete the task at hand.
+            This may require breaking the task into subtasks and using different tools
+            to complete each subtask.
 
             You have access to the following tool:
             search_publications
@@ -52,12 +54,12 @@ class FetchBot:
             ```
             Thought: I need to use a tool to help me answer the question.
             Action: tool name (one of {tool_names}) if using a tool.
-            Action Input: the input to the tool, in a JSON format representing the kwargs (e.g. {{"keyword": "Kualitas sungai"}})
+            Action Input: the input to the tool, in a JSON format representing the kwargs (e.g. {{"keyword": "Kualitas sungai"}}
             ```
 
             Please ALWAYS start with a Thought.
 
-            Please use a valid JSON format for the Action Input. Do NOT do this {{'keyword': 'Kualitas sungai'}}.
+            Please use a valid JSON format for the Action Input. Do NOT do this {{'keyword': 'Kualitas sungai'}}
 
             If this format is used, the user will respond in the following format:
 
@@ -73,12 +75,12 @@ class FetchBot:
             ```
             ```
             Thought: I cannot answer the question with the provided tools.
-            Answer: Sorry, I cannot answer your query. Here's the closest result I can find [your answer here]
+            Answer: Sorry, I cannot answer your query.
             ```
             ## Additional Rules
             - You MUST obey the function signature of each tool. Do NOT pass in no arguments if the function expects arguments.
-            - The keywords MUST use the same language as the user input
-            - search_publications only accept 1 input that is keywords.
+            - search_publications ONLY accept ONE (1) input that is keywords.
+            - keywords MUST be from the same language as what the user is using.
 
             ## Current Conversation
             Below is the current conversation consisting of interleaving human and assistant messages.
@@ -110,6 +112,17 @@ class FetchBot:
 
 class OutputBot:
     def __init__(self, llm="llama3.1:latest", embedding_model="intfloat/multilingual-e5-large"):
+        self.system_prompt = """
+                You are a multilingual source finder magician with access to all of the information sources on earth.
+
+                ## Instruction
+                1. You help users find the source they needed for an information.
+                2. Your task is to provide source's title for the user along with the source's detail (except for title) from your context.
+                3. If the user ask something else outside of searching publication, try to use your context to answer the user's question while providing the source or link of that context.
+
+                Here are the relevant documents filled with title, links and other details for your context: {context_str}
+                Answer the user quere here : {query_str} by following the instruction above.  
+        """
         self.Settings = self.set_setting(llm, embedding_model)
         self.index = self.load_data()
         self.create_chat_history()
@@ -138,27 +151,11 @@ class OutputBot:
         self.memory = ChatMemoryBuffer.from_defaults(chat_store=self.chat_store, chat_store_key="chat_history", token_limit=16000)
 
     def return_response(self, prompt):
-        retriever = VectorIndexRetriever(
-            index=self.index,
-            similarity_top_k=5,
-        )
-        response_synthesizer = get_response_synthesizer(
-            response_mode="tree_summarize",
-        )
-        query_engine = RetrieverQueryEngine(
-            retriever=retriever,
-            response_synthesizer=response_synthesizer,
-        )
-        response = query_engine.query(
+        text_qa_template = PromptTemplate(self.system_prompt)
+        response = self.index.as_query_engine(
             verbose=True,
             memory=self.memory,
             llm=self.llm,
-            context_prompt=(
-                "You are a multilingual publication finder magician with access to all of the academic publications on earth."
-                "You help users find the publication they needed for their research."
-                "Here are the relevant documents for the context:\n"
-                "Your task is to provide publication for the user along with the publication's title, link and publication info"
-                "If the user ask something else outside of searching publication, try to use your knowledge to answer the user's question while providing the source of that knowledge."
-            ),
-        ).chat(prompt)
+            text_qa_template=text_qa_template,
+        ).query(prompt)
         return response.response

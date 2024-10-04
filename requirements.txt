@@ -6,12 +6,6 @@ llama-index-vector-stores-qdrant
 llama-index-embeddings-ollama
 llama-index-retrievers-bm25
 
-lm-format-enforcer
-llama-index-program-lmformatenforcer
-
-llama-cpp-python
-llama-index-llms-llama-cpp
-
 qdrant_client
 fastembed
 streamlit==1.32.2
