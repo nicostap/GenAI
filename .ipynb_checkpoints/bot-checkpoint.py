@@ -16,6 +16,7 @@ import ast
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 import qdrant_client
 import streamlit as st
+import duckduckgo_search
 
 class InputBot:
     def __init__(self):
@@ -50,7 +51,7 @@ class FetchBot:
             to complete each subtask.
 
             You have access to the following tool:
-            search_publications
+            {tool_desc}
 
             ## Output Format
             To answer the question, please use the following format.
@@ -123,6 +124,7 @@ class OutputBot:
                 1. You help users find the source they needed for an information.
                 2. Your task is to provide source's title for the user along with the source's detail (except for title) from your context.
                 3. If the user ask something else outside of searching publication, try to use your context to answer the user's question while providing the source or link of that context.
+                4. If the link provided is a video from YouTube, it must be displayed in embedded form.
 
                 Here are the relevant documents filled with title, links and other details for your context: {context_str}
                 Answer the user quere here : {query_str} by following the instruction above.  

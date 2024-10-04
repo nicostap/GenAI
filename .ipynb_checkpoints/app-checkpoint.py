@@ -1,223 +1,278 @@
+import re
 import streamlit as st
-# import request
-from ta import (trend, momentum, volatility, volume)
-import yfinance as yf
-import pandas as pd
-from llama_index.llms.ollama import Ollama
-from pathlib import Path
-import qdrant_client
-from llama_index.core import (SimpleDirectoryReader, VectorStoreIndex, Settings, Document, load_index_from_storage)
-from llama_index.vector_stores.qdrant import QdrantVectorStore
-from llama_index.embeddings.fastembed import FastEmbedEmbedding
-from llama_index.core.retrievers import VectorIndexRetriever
-from llama_index.core.query_engine import RetrieverQueryEngine
-from llama_index.core.response_synthesizers import get_response_synthesizer
-from llama_index.core.node_parser import SimpleNodeParser
-from llama_index.core.storage.docstore import SimpleDocumentStore
-from llama_index.core.vector_stores import SimpleVectorStore
-from llama_index.core.storage.index_store import SimpleIndexStore
-from llama_index.core import StorageContext
-from llama_index.core.chat_engine import CondensePlusContextChatEngine
-from llama_index.core.llms import ChatMessage
-from llama_index.core.storage.chat_store import SimpleChatStore
-from llama_index.core.memory import ChatMemoryBuffer
-from llama_index.core import PromptTemplate
-from llama_index.core.tools import BaseTool, FunctionTool
-from llama_index.core.agent import ReActAgent
-from data_utils import CustomTools
+from scholarly import scholarly
+from collections import deque
+from bot import InputBot, FetchBot, OutputBot
+from llama_index.core import Document
+from duckduckgo_search import AsyncDDGS
+import requests
+from bs4 import BeautifulSoup
 
-class Chatbot:
-    def __init__(self, llm="llama3.1:latest", embedding_model="jinaai/jina-embeddings-v2-base-code", vector_store=None, cTools=CustomTools()):
-        self.Settings = self.set_setting(llm, embedding_model)
-
-        self.memory = self.create_memory()
-
-        self.index = self.load_data('./docs')
-        self.cTools = cTools
-
-        # self.chat_engine = self.create_chat_engine(self.index)
-        self.chat_engine = self.create_react_agent(self.index)
-
-    def set_setting( _arg, llm, embedding_model):
-        Settings.llm = Ollama(model=llm, base_url="http://127.0.0.1:11434")
-        Settings.embed_model = FastEmbedEmbedding(
-            model_name=embedding_model, cache_dir="./fastembed_cache")
-        Settings.system_prompt = """
-       You are a multi-lingual expert system named Jarvis. You have extensive knowledge in investment analysis, specializing in both 
-       technical and fundamental analysis across various asset classes, including stocks, cryptocurrencies, forex, 
-       and more. Your primary task is to deliver insightful, data-driven analysis and tailored recommendations based 
-       on user queries regarding investments. You can respond fluently in both English and Indonesian. 
-       Your responsibilities include:
-    
-        1. **Technical Analysis:**
-           - Provide insights based on technical indicators such as RSI, MACD, Bollinger Bands, Moving Averages, etc.
-           - Analyze chart patterns and trends to generate buy/sell signals.
-           - Explain the significance of each technical indicator and how it informs trading decisions.
-    
-        2. **Fundamental Analysis:**
-           - Offer detailed analyses of financial statements, including P/E ratios, EPS, revenue growth, and other key metrics.
-           - Evaluate the intrinsic value of stocks or cryptocurrencies based on fundamental data.
-           - Explain how fundamental factors influence market movements and investment decisions.
-    
-        3. **Educational Support:**
-           - Educate users on the basics of trading, including key concepts, strategies, and best practices.
-           - Provide tutorials on how to interpret technical and fundamental indicators.
-           - Answer beginner questions with clear and concise explanations to foster learning.
-    
-        4. **Market Predictions:**
-           - Utilize historical and real-time data to offer market outlooks and trend predictions.
-           - Clearly communicate the speculative nature of predictions and encourage users to conduct their own research.
-           - Explain the factors contributing to predicted market movements.
-    
-        5. **User Interaction:**
-           - Engage in multi-turn conversations, maintaining context to provide coherent and relevant responses.
-           - Adapt explanations based on the user's level of expertise, offering advanced insights to experienced traders and simplified explanations to beginners.
-    
-            Ensure all information is accurate, up-to-date, and presented in an unbiased manner. Prioritize user understanding and empower them to make informed trading decisions.
-        """
-
-        return Settings
-
-
-    def create_react_system_prompt(self, prompt=None):
-        if prompt!=None:
-            react_system_header_str = prompt
-
-        else:         
-            react_system_header_str = """\
-            
-            ## Tools
-            You have access to a wide variety of tools. You are responsible for using
-            the tools in any sequence you deem appropriate to complete the task at hand.
-            This may require breaking the task into subtasks and using different tools
-            to complete each subtask.
-            
-            You have access to the following tools:
-            {tool_desc}
-            
-            ## Output Format
-            To answer the question, please use the following format.
-            
-            ```
-            Thought: I need to use a tool to help me answer the question.
-            Action: tool name (one of {tool_names}) if using a tool.
-            Action Input: the input to the tool, in a JSON format representing the kwargs (e.g. {{"input": "hello world", "num_beams": 5}})
-            ```
-            
-            Please ALWAYS start with a Thought.
-            
-            Please use a valid JSON format for the Action Input. Do NOT do this {{'input': 'hello world', 'num_beams': 5}}.
-            
-            If this format is used, the user will respond in the following format:
-            
-            ```
-            Observation: tool response
-            
-            ```
-            You should keep repeating the above format until you have enough information
-            to answer the question without using any more tools. At that point, you MUST respond
-            in the one of the following two formats:
-            
-            ```
-            Thought: I can answer without using any more tools.
-            Answer: [your answer here]
-            ```
-            
-            ```
-            Thought: I cannot answer the question with the provided tools.
-            Answer: Sorry, I cannot answer your query.
-            ```
-            
-            ## Additional Rules
-            - You MUST obey the function signature of each tool. Do NOT pass in no arguments if the function expects arguments.
-            
-            ## Current Conversation
-            Below is the current conversation consisting of interleaving human and assistant messages.
-            
-            """
-        react_system_prompt = PromptTemplate(react_system_header_str)
-        return react_system_prompt
-
-    def create_chat_engine(self, index):
-        return CondensePlusContextChatEngine(
-            verbose=True,
-            memory=self.memory,
-            retriever=index.as_retriever(),
-            llm=Settings.llm
-        )
-
-
-    def create_react_agent(self, index):
-        get_stock_data_tool = FunctionTool.from_defaults(fn=self.cTools.get_stock_data)
-        analyze_stock_tool = FunctionTool.from_defaults(fn=self.cTools.analyze_stock)
-        analyze_fundamental_tool = FunctionTool.from_defaults(fn=self.cTools.analyze_fundamental)
-        
-        tools = [get_stock_data_tool, analyze_stock_tool, analyze_fundamental_tool]
-        agent = ReActAgent.from_tools(
-            tools,
-            chat_mode="react",
-            verbose=True,
-            memory=self.memory,
-            react_system_prompt=self.create_react_system_prompt(),
-            # retriever=index.as_retriever(),
-            llm=Settings.llm)
-        return agent
-
-    def split_text_into_chunks(self, text, chunk_size=2000):
-        return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
-
-    def create_index_from_text(self, text_chunks):
-        # Create documents and add them to the index
-        documents = [Document(text=chunk) for chunk in text_chunks]
-        parser = SimpleNodeParser.from_defaults(chunk_size=200)
-        nodes = parser.get_nodes_from_documents(documents)
-        index = VectorStoreIndex(nodes)
-
-        return index
-
-    @st.cache_resource(show_spinner=False)
-    def load_data(_arg, vector_store=None):
-        with st.spinner(text="Loading and indexing – hang tight! This should take a few minutes."):
-            # Read & load document from folder
-            reader = SimpleDirectoryReader(input_dir="./docs", recursive=True)
-            documents = reader.load_data()
-
-        if vector_store is None:
-            index = VectorStoreIndex.from_documents(documents)
-
-        else:
-            index = VectorStoreIndex.from_documents(documents, vector_store=vector_store)
-        return index
-
-    def create_memory(self):
-        self.chat_store = SimpleChatStore()
-        return ChatMemoryBuffer.from_defaults(chat_store=self.chat_store, chat_store_key="chat_history", token_limit=16000)
-
-    def set_chat_history(self, messages):
-        self.chat_history = [ChatMessage(role=message["role"], content=message["content"]) for message in messages]
-        self.chat_store.store = {"chat_history": self.chat_history}
-
-
-st.title("Market Analysis Assistance")
-
-chatbot = Chatbot()
-
+# Initialize everything
+st.set_page_config(
+    page_title="Source Bot",
+)
+if "memory" not in st.session_state:
+    st.session_state.track_index = deque()
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant",
-         "content": "Hello there 👋!\n\n I'm Jarvis, your intelligent financial assistant. I can help you perform technical and fundamental analysis on various investment products, educate you on trading basics, and even provide market predictions. How can I assist you today?"}
+        {
+            "role": "assistant",
+            "content": "Hello! How can I help you find academic publications today?",
+        }
     ]
+if "input_bot" not in st.session_state:
+    st.session_state.input_bot = InputBot()
+if "output_bot" not in st.session_state:
+    st.session_state.output_bot = OutputBot()
+if "links" not in st.session_state:
+    st.session_state.links = []
 
-print(chatbot.chat_store.store)
+# Special dependencies
+def title_to_variable(title):
+    title = title.lower()
+    title = title.replace(" ", "_")
+    title = re.sub(r'[^a-z0-9_]', '', title)
+    return title
 
+def save_to_index(content, indentifier):
+    doc_id = title_to_variable(indentifier)
+    doc = Document(text=content, id_=doc_id)
+    st.session_state.output_bot.index.insert(doc)
+    st.session_state.track_index.append(doc_id)
+
+    # If context is full, pop old ones
+    if len(st.session_state.track_index) > 200:
+        old_doc_id = st.session_state.track_index.popLeft()
+        st.session_state.output_bot.index.delete_ref_doc(old_doc_id, delete_from_docstore=True)
+
+def scrape_page(url):
+    # Make an HTTP request to the URL
+    response = requests.get(url)
+    
+    # Check if the request was successful
+    if response.status_code == 200:
+        # Parse the HTML content
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Extract specific data (modify this based on your needs)
+        title = soup.title.string if soup.title else 'No title found'
+        print(f'Title: {title}')
+        
+        # Example: Extract all paragraphs
+        paragraphs = soup.find_all('p')
+        for p in paragraphs:
+            print(p.get_text())
+    else:
+        print(f'Failed to retrieve {url}: {response.status_code}')
+
+async def search_video(keyword: str) -> str:
+    """Get video search results from duckduckgo.com based on the keyword given. Based on needs, keywords need to follow a format like the following example:
+    1. cats dogs -> Results about cats or dogs
+    2. cats and dogs -> Results for exact term "cats and dogs". If no results are found, related results are shown.
+    3. cats -dogs -> Fewer dogs in results
+    4. cats +dogs -> More dogs in results
+    5. cats filetype:pdf -> PDFs about cats. Supported file types: pdf, doc(x), xls(x), ppt(x), html
+    6. dogs site:example.com -> Pages about dogs from example.com
+    7. cats -site:example.com -> Pages about cats, excluding example.com
+    8. intitle:dogs -> Page title includes the word "dogs"
+    9. inurl:cats -> Page url includes the word "cats"
+    
+    """
+    output = f"# Internet Search Result for '{keyword}' video \n"
+    search_query = await AsyncDDGS(proxy=None).avideos(keyword, region='wt-wt', safesearch='on', max_results=5)
+
+    for result in search_query:
+        # Extracting information from the result
+        title = result['title']
+        content = result['content']
+        description = result['description']
+        publisher = result ["publisher"]
+        embed_url = result ["embed_url"]
+        uploader = result ["uploader"]
+                
+        #scrape more info from href
+        scrape_result = scrape_page(content)
+
+         # Constructing the output
+        result = (
+            f"   *Title:* {title}\n"
+            f"   *Link:* {content}\n"
+            f"   *Description:* {description}\n"
+            f"   *Content:* {scrape_result}\n"
+            f"   *Publisher:* {publisher}\n"
+            f"   *Uploader:* {uploader}\n"
+            f"   *Embed_URL:* {embed_url} \n\n"
+        )
+
+        output += result
+        save_to_index(result, title)
+
+    return output
+
+async def search_image(keyword: str) -> str:
+    """Get image search results from duckduckgo.com based on the keyword given. Based on needs, keywords need to follow a format like the following example:
+    1. cats dogs -> Results about cats or dogs
+    2. cats and dogs -> Results for exact term "cats and dogs". If no results are found, related results are shown.
+    3. cats -dogs -> Fewer dogs in results
+    4. cats +dogs -> More dogs in results
+    5. cats filetype:pdf -> PDFs about cats. Supported file types: pdf, doc(x), xls(x), ppt(x), html
+    6. dogs site:example.com -> Pages about dogs from example.com
+    7. cats -site:example.com -> Pages about cats, excluding example.com
+    8. intitle:dogs -> Page title includes the word "dogs"
+    9. inurl:cats -> Page url includes the word "cats"
+    
+    """
+    output = f"# Internet Search Result for '{keyword}' image \n"
+    
+    search_query = await AsyncDDGS(proxy=None).aimages(keyword, region='wt-wt', safesearch='on', max_results=5)
+
+    for result in search_query:
+        # Extracting information from the result
+        title = result['title']
+        url = result['url']
+        image = result['image']
+
+        #scrape more info from href
+        scrape_result = scrape_page(url)
+
+         # Constructing the output
+        result = (
+            f"   *Title:* {title}\n"
+            f"   *Image URL:* {image}\n"
+            f"   *Link:* {link}\n"
+            f"   *Content:* {scrape_result}\n\n"
+        )
+
+        output += result
+        save_to_index(result, title)
+
+    return output
+
+
+async def search_internet(keyword: str) -> str:
+    """Get search results from duckduckgo.com based on the keyword given. Based on needs, keywords need to follow a format like the following example:
+    1. cats dogs -> Results about cats or dogs
+    2. cats and dogs -> Results for exact term "cats and dogs". If no results are found, related results are shown.
+    3. cats -dogs -> Fewer dogs in results
+    4. cats +dogs -> More dogs in results
+    5. cats filetype:pdf -> PDFs about cats. Supported file types: pdf, doc(x), xls(x), ppt(x), html
+    6. dogs site:example.com -> Pages about dogs from example.com
+    7. cats -site:example.com -> Pages about cats, excluding example.com
+    8. intitle:dogs -> Page title includes the word "dogs"
+    9. inurl:cats -> Page url includes the word "cats"
+    
+    """
+    output = f"# Internet Search Result for '{keyword}' text \n"
+
+    search_query = await AsyncDDGS(proxy=None).atext(keyword, region='wt-wt', safesearch='on', max_results=5)
+
+    for result in search_query:
+        # Extracting information from the result
+        title = result['title']
+        href = result['href']
+        body = result['body']
+
+        #scrape more info from href
+        scrape_result = scrape_page(href)
+
+         # Constructing the output
+        result = (
+            f"   *Title:* {title}\n"
+            f"   *Link:* {href}\n"
+            f"   *Body:* {body}\n"
+            f"   *Detail:* {scrape_result}\n\n"
+        )
+
+        output += result
+        save_to_index(result, title)
+   
+    return output
+    
+
+async def search_publications(keyword: str) -> str:
+    """Searches Google Scholar for publications based on the keyword given."""
+
+    # Initialize search query
+    search_query = scholarly.search_pubs(keyword)
+
+    # Prepare output
+    output = f"# Publication Search Results for '{keyword}'\n"
+
+    # Iterate over search results, limiting to the first 4
+    for i in range(4):
+        try:
+            result = next(search_query)
+        except StopIteration:
+            break  # No more results
+
+        # Extracting information from the result
+        title = result['bib'].get('title', 'No title')
+        author = ", ".join(result['bib'].get('author', ['Unknown author']))
+        pub_year = result['bib'].get('pub_year', 'Unknown year')
+        venue = result['bib'].get('venue', 'Unknown venue')
+        pub_info = f"{author}, {pub_year}, {venue}"
+        abstract = result['bib'].get('abstract', 'No description available')
+        cited_by_count = result.get('num_citations', 'Unknown')
+        link = result.get('pub_url', 'No link available')
+
+        # Constructing the output
+        result = (
+            f"   *Title:* {title}\n"
+            f"   *Link:* {link}\n"
+            f"   *Abstract:* {abstract}\n"
+            f"   *Publication info:* {pub_info}\n"
+            f"   *Cited by:* {cited_by_count}\n\n"
+        )
+        output += result
+        save_to_index(result, title)
+
+    return output
+
+# Function to check if a link is an image
+def is_image_link(url):
+    return url.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff'))
+
+# Function to check if a link is a YouTube video link
+def is_video_link(url):
+    return re.match(r'(https?://(?:www\.)?youtube\.com/watch\?v=[\w-]+|https?://youtu\.be/[\w-]+)', url) is not None
+
+
+if "fetch_bot" not in st.session_state:
+    st.session_state.fetch_bot = FetchBot([search_publications, search_internet, search_video, search_image])
+
+# Main Program
+st.title("📚 SourceBot")
+st.markdown("Find any sources of information")
+
+# Display chat messages from history on app rerun
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
+st.session_state.output_bot.set_chat_history(st.session_state.messages)
 
-chatbot.set_chat_history(st.session_state.messages)
+st.sidebar.title("🔗 Saved Links")
+with st.sidebar.container():
+    if len(st.session_state.links) == 0:
+        st.markdown("No saved links yet")
+    for link in st.session_state.links:
+        match = re.match(r"(https?://)?(www\d?\.)?(?P<domain>[\w\.-]+\.\w+)(/\S*)?", link)
 
-if prompt := st.chat_input("How can i help you?"):
-    # Display user message in chat message container
+        # Check if the link is an image or video
+        if is_image_link(link):
+            # Display image link
+            st.image(link, caption=match.group("domain"), use_column_width=True)
+        elif is_video_link(link):
+            # Display video link
+            st.video(link)
+        else:
+            # Display as a regular link button
+            st.link_button(match.group("domain"), link)
+        st.link_button(match.group("domain"), link)
+
+# Chat input from user
+if prompt := st.chat_input("What is up?"):
+    # Display user message
     with st.chat_message("user"):
         st.markdown(prompt)
 
@@ -225,12 +280,20 @@ if prompt := st.chat_input("How can i help you?"):
     st.session_state.messages.append({"role": "user", "content": prompt})
 
     with st.chat_message("assistant"):
-        response = ""
-        response = chatbot.chat_engine.chat(prompt)
-        st.markdown(response.response)
-        # response.print_response_stream()
+        with st.spinner("Loading..."):
+            fetch_query = st.session_state.input_bot.return_response(prompt)
+            print(fetch_query)
 
-    # Add user message to chat history
-    st.session_state.messages.append(
-        {"role": "assistant", "content": response})
+            thought_process = st.session_state.fetch_bot.process(fetch_query)
+
+            response = st.session_state.output_bot.return_response(prompt)
+            urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\), ]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', response)
+            st.session_state.links.clear()
+            st.session_state.links.extend(urls)
+            st.markdown(response)
+
+    st.session_state.messages.append({"role": "assistant", "content": response})
+    st.rerun()
+
+
 

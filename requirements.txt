@@ -12,3 +12,7 @@ streamlit==1.32.2
 scholarly
 python-dotenv
 sqlite-utils
+
+beautifulsoup4
+duckduckgo-search
+requests
