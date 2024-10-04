@@ -84,13 +84,14 @@ if "fetch_bot" not in st.session_state:
     st.session_state.fetch_bot = FetchBot([search_publications])
 
 # Main Program
-st.title("📚 Publication Finder Bot")
-st.markdown("Your personal assistant to help you discover academic publications efficiently.")
+st.title("📚 SourceBot")
+st.markdown("Find any sources or any information with their sources")
 
 # Display chat messages from history on app rerun
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
+st.session_state.output_bot.set_chat_history(st.session_state.messages)
 
 # Chat input from user
 if prompt := st.chat_input("What is up?"):

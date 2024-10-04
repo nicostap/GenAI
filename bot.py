@@ -1,6 +1,6 @@
 from llama_index.llms.ollama import Ollama
 from llama_index.embeddings.ollama import OllamaEmbedding
-from llama_index.core import PromptTemplate, Settings, VectorStoreIndex, Document, SimpleDirectoryReader
+from llama_index.core import PromptTemplate, Settings, VectorStoreIndex, Document, SimpleDirectoryReader, get_response_synthesizer
 from llama_index.core.memory import ChatMemoryBuffer
 from llama_index.core.agent import ReActAgent
 from llama_index.core.tools import BaseTool, FunctionTool
@@ -8,46 +8,27 @@ from llama_index.core.llms import ChatMessage, MessageRole
 from llama_index.core.query_engine import JSONalyzeQueryEngine
 from llama_index.core.storage.chat_store import SimpleChatStore
 from llama_index.embeddings.fastembed import FastEmbedEmbedding
-
-import sys
-from pydantic import BaseModel, Field
-from typing import List
-from llama_index.program.lmformatenforcer import (
-    LMFormatEnforcerPydanticProgram,
-)
-from llama_index.llms.llama_cpp import LlamaCPP
-
-
-class Query(BaseModel):
-    input: str
+from llama_index.core.retrievers import VectorIndexRetriever
+from llama_index.core.query_engine import RetrieverQueryEngine
+import re
+import ast
 
 class InputBot:
     def __init__(self):
-        self.llm = LlamaCPP()
+        self.llm = Ollama(model="llama3.1:latest", base_url="http://127.0.0.1:11434", temperature=0, )
 
-        self.agent = LMFormatEnforcerPydanticProgram(
-            output_cls=Query,
-            prompt_template_str=(
-                """
-                Your response should be according to the following json schema: \n
-                {json_schema}\n"
-
-                # Instruction
-                1. Receive the user prompt using the user's prompt {prompt} as inspiration.
+        self.header_prompt =  """
+                ## Instruction
+                1. Receive the user prompt.
                 1. Identify the language of the conversation from user's prompt : Determine the language the user is speaking.
-                2. Understand the user's prompt: Summarize what the user wants to know or ask.
-                3. Generate an example Query with an "input" property that follows the following strict format :
-                    "Give me a list of publications about [topic]."
-                    Ensure that this query is written in the same language as the user’s input.
-                """
-            ),
-            llm=self.llm,
-            verbose=True,
-        )
+                2. Understand the user's prompt: Summarize what the user wants to know or ask into one or more topics.
+                3. Return the topics in the user's language in the form of list ["{topic1}", "{topic2}", ...]
+            """
 
     def return_response(self, prompt):
-        output = self.agent(prompt=prompt)
-        return output.model_dump()["input"]
+        response = self.llm.complete(f"{self.header_prompter}\n{prompt}")
+        result = re.search('[(.*)]', response.content)
+        return result.group(1)
 
 class FetchBot:
     def __init__(self, input_methods):
@@ -122,14 +103,17 @@ class FetchBot:
         )
         self.agent.update_prompts({"agent_worker:system_prompt": react_system_prompt})
 
-    def process(self, prompt):
-        return self.agent.chat(prompt)
+    def process(self, prompt_string):
+        prompts = ast.literal_eval(prompt_string)
+        for prompt in prompts:
+            return self.agent.chat(prompt)
 
 class OutputBot:
     def __init__(self, llm="llama3.1:latest", embedding_model="intfloat/multilingual-e5-large"):
         self.Settings = self.set_setting(llm, embedding_model)
         self.index = self.load_data()
-        self.memory = self.create_memory()
+        self.create_chat_history()
+        self.refresh_memory()
 
     def load_data(self):
         reader = SimpleDirectoryReader(input_dir="./docs", recursive=True)
@@ -145,14 +129,27 @@ class OutputBot:
     def set_chat_history(self, messages):
         self.chat_history = [ChatMessage(role=message["role"], content=message["content"]) for message in messages]
         self.chat_store.store = {"chat_history": self.chat_history}
+        self.refresh_memory()
 
-    def create_memory(self):
+    def create_chat_history(self):
         self.chat_store = SimpleChatStore()
-        return ChatMemoryBuffer.from_defaults(chat_store=self.chat_store, chat_store_key="chat_history", token_limit=16000)
+
+    def refresh_memory(self):
+        self.memory = ChatMemoryBuffer.from_defaults(chat_store=self.chat_store, chat_store_key="chat_history", token_limit=16000)
 
     def return_response(self, prompt):
-        response = self.index.as_chat_engine(
-            chat_mode="condense_plus_context",
+        retriever = VectorIndexRetriever(
+            index=self.index,
+            similarity_top_k=5,
+        )
+        response_synthesizer = get_response_synthesizer(
+            response_mode="tree_summarize",
+        )
+        query_engine = RetrieverQueryEngine(
+            retriever=retriever,
+            response_synthesizer=response_synthesizer,
+        )
+        response = query_engine.query(
             verbose=True,
             memory=self.memory,
             llm=self.llm,
