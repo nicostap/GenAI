@@ -16,3 +16,5 @@ sqlite-utils
 beautifulsoup4
 duckduckgo-search
 requests
+
+crawl4ai

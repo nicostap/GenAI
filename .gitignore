@@ -1,0 +1,7 @@
+fastembed_cache/
+persist/
+pycache/
+.ipynb_checkpoints/
+.env
+__pycache__/
+.streamlit/secrets.toml
