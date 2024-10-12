@@ -9,7 +9,7 @@ import requests
 from bs4 import BeautifulSoup
 import time
 from crawl4ai import WebCrawler
-import base64
+
 
 # Initialize everything
 st.set_page_config(
@@ -21,7 +21,7 @@ if "messages" not in st.session_state:
     st.session_state.messages = [
         {
             "role": "assistant",
-            "content": "Hello! How can I help you find academic publications today?",
+            "content": "Hello! What information can I help you find today?",
         }
     ]
 if "input_bot" not in st.session_state:
@@ -34,23 +34,32 @@ if "crawler" not in st.session_state:
     st.session_state.crawler = WebCrawler()
     st.session_state.crawler.warmup()
 
+
 # Special dependencies
 def title_to_variable(title):
     title = title.lower()
     title = title.replace(" ", "_")
-    title = re.sub(r'[^a-z0-9_]', '', title)
+    title = re.sub(r"[^a-z0-9_]", "", title)
     return title
+
 
 def save_to_index(content, indentifier):
     doc_id = title_to_variable(indentifier)
-    doc = Document(text=content, id_=doc_id, metadata={"filename": doc_id, "timestamp": int(time.time())})
+    doc = Document(
+        text=content,
+        id_=doc_id,
+        metadata={"filename": doc_id, "timestamp": int(time.time())},
+    )
     st.session_state.output_bot.index.insert(doc)
     st.session_state.track_index.append(doc_id)
 
     # If context is full, pop old ones
     if len(st.session_state.track_index) > 20:
-        old_doc_id = st.session_state.track_index.popLeft()
-        st.session_state.output_bot.index.delete_ref_doc(old_doc_id, delete_from_docstore=True)
+        old_doc_id = st.session_state.track_index.popleft()
+        st.session_state.output_bot.index.delete_ref_doc(
+            old_doc_id, delete_from_docstore=True
+        )
+
 
 def scrape_page(url):
     # Make an HTTP request to the URL
@@ -59,18 +68,19 @@ def scrape_page(url):
     # Check if the request was successful
     if response.status_code == 200:
         # Parse the HTML content
-        soup = BeautifulSoup(response.text, 'html.parser')
+        soup = BeautifulSoup(response.text, "html.parser")
 
         # Extract specific data (modify this based on your needs)
-        title = soup.title.string if soup.title else 'No title found'
-        print(f'Title: {title}')
+        title = soup.title.string if soup.title else "No title found"
+        print(f"Title: {title}")
 
         # Example: Extract all paragraphs
-        paragraphs = soup.find_all('p')
+        paragraphs = soup.find_all("p")
         for p in paragraphs:
             print(p.get_text())
     else:
-        print(f'Failed to retrieve {url}: {response.status_code}')
+        print(f"Failed to retrieve {url}: {response.status_code}")
+
 
 async def search_video(keyword: str) -> str:
     """Get video search results from duckduckgo.com based on the keyword given. Based on needs, keywords need to follow a format like the following example:
@@ -85,16 +95,18 @@ async def search_video(keyword: str) -> str:
     9. inurl:cats -> Page url includes the word "cats"
     """
     output = f"# Internet Search Result for '{keyword}' video \n"
-    search_query = await AsyncDDGS(proxy=None).avideos(keyword, region='wt-wt', safesearch='on', max_results=5)
+    search_query = await AsyncDDGS(proxy=None).avideos(
+        keyword, region="wt-wt", safesearch="on", max_results=5
+    )
 
     for result in search_query:
         # Extracting information from the result
-        title = result['title']
-        content = result['content']
-        description = result['description']
-        publisher = result ["publisher"]
-        embed_url = result ["embed_url"]
-        uploader = result ["uploader"]
+        title = result["title"]
+        content = result["content"]
+        description = result["description"]
+        publisher = result["publisher"]
+        embed_url = result["embed_url"]
+        uploader = result["uploader"]
 
         # Scrape more info from href
         scrape_result = scrape_page(content)
@@ -116,6 +128,7 @@ async def search_video(keyword: str) -> str:
 
     return output
 
+
 async def search_image(keyword: str) -> str:
     """Get image search results from duckduckgo.com based on the keyword given. Based on needs, keywords need to follow a format like the following example:
     1. cats dogs -> Results about cats or dogs
@@ -130,13 +143,15 @@ async def search_image(keyword: str) -> str:
     """
     output = f"# Internet Search Result for '{keyword}' image \n"
 
-    search_query = await AsyncDDGS(proxy=None).aimages(keyword, region='wt-wt', safesearch='on', max_results=5)
+    search_query = await AsyncDDGS(proxy=None).aimages(
+        keyword, region="wt-wt", safesearch="on", max_results=5
+    )
 
     for result in search_query:
         # Extracting information from the result
-        title = result['title']
-        url = result['url']
-        image = result['image']
+        title = result["title"]
+        url = result["url"]
+        image = result["image"]
 
         # Scrape more info from href
         scrape_result = scrape_page(url)
@@ -171,13 +186,15 @@ async def search_internet(keyword: str) -> str:
     """
     output = f"# Internet Search Result for '{keyword}' text \n"
 
-    search_query = await AsyncDDGS(proxy=None).atext(keyword, region='wt-wt', safesearch='on', max_results=5)
+    search_query = await AsyncDDGS(proxy=None).atext(
+        keyword, region="wt-wt", safesearch="on", max_results=5
+    )
 
     for result in search_query:
         # Extracting information from the result
-        title = result['title']
-        href = result['href']
-        body = result['body']
+        title = result["title"]
+        href = result["href"]
+        body = result["body"]
 
         # Scrape more info from href
         scrape_result = scrape_page(href)
@@ -214,14 +231,14 @@ async def search_publications(keyword: str) -> str:
             break  # No more results
 
         # Extracting information from the result
-        title = result['bib'].get('title', 'No title')
-        author = ", ".join(result['bib'].get('author', ['Unknown author']))
-        pub_year = result['bib'].get('pub_year', 'Unknown year')
-        venue = result['bib'].get('venue', 'Unknown venue')
+        title = result["bib"].get("title", "No title")
+        author = ", ".join(result["bib"].get("author", ["Unknown author"]))
+        pub_year = result["bib"].get("pub_year", "Unknown year")
+        venue = result["bib"].get("venue", "Unknown venue")
         pub_info = f"{author}, {pub_year}, {venue}"
-        abstract = result['bib'].get('abstract', 'No description available')
-        cited_by_count = result.get('num_citations', 'Unknown')
-        link = result.get('pub_url', 'No link available')
+        abstract = result["bib"].get("abstract", "No description available")
+        cited_by_count = result.get("num_citations", "Unknown")
+        link = result.get("pub_url", "No link available")
 
         # Constructing the output
         result = (
@@ -237,17 +254,27 @@ async def search_publications(keyword: str) -> str:
 
     return output
 
+
 # Function to check if a link is an image
 def is_image_link(url):
-    return url.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff'))
+    return url.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff"))
+
 
 # Function to check if a link is a YouTube video link
 def is_video_link(url):
-    return re.match(r'(https?://(?:www\.)?youtube\.com/watch\?v=[\w-]+|https?://youtu\.be/[\w-]+)', url) is not None
+    return (
+        re.match(
+            r"(https?://(?:www\.)?youtube\.com/watch\?v=[\w-]+|https?://youtu\.be/[\w-]+)",
+            url,
+        )
+        is not None
+    )
 
 
 if "fetch_bot" not in st.session_state:
-    st.session_state.fetch_bot = FetchBot([search_publications, search_internet, search_video, search_image])
+    st.session_state.fetch_bot = FetchBot(
+        [search_publications, search_internet, search_video, search_image]
+    )
 
 # Main Program
 st.title("📚 SourceBot")
@@ -264,7 +291,9 @@ with st.sidebar.container():
     if len(st.session_state.links) == 0:
         st.markdown("No saved links yet")
     for link in st.session_state.links:
-        match = re.match(r"(https?://)?(www\d?\.)?(?P<domain>[\w\.-]+\.\w+)(/\S*)?", link)
+        match = re.match(
+            r"(https?://)?(www\d?\.)?(?P<domain>[\w\.-]+\.\w+)(/\S*)?", link
+        )
         # Check if the link is an image or video
         if is_image_link(link):
             # Display image link
@@ -276,8 +305,20 @@ with st.sidebar.container():
             # Display as a regular link button
             image_result = st.session_state.crawler.run(url=link, screenshot=True)
             image_data = image_result.screenshot
-            st.markdown(f'<a href="{link}" target="_blank"><img src="data:image/png;base64,{image_data}" alt="Screenshot" style="width:100%; max-width:700px; border-radius: 50%;"></a>', unsafe_allow_html=True)
-            # st.link_button(match.group("domain"), link)
+            if image_data is not None:
+                st.markdown(
+                    f"""
+                        <a href="{link}" target="_blank">
+                            <div style="width: 100%; border-radius: 20px; max-height: 200px; overflow:hidden;">
+                                <img src="data:image/png;base64,{image_data}" alt="Screenshot" style="width: 101%;">
+                            </div>
+                        </a>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.link_button(match.group("domain"), link)
+        st.markdown('<br/>', unsafe_allow_html=True)
 
 # Chat input from user
 if prompt := st.chat_input("What is up?"):
@@ -289,12 +330,16 @@ if prompt := st.chat_input("What is up?"):
     st.session_state.messages.append({"role": "user", "content": prompt})
 
     with st.chat_message("assistant"):
-        with st.spinner("Fetching relevant data..."):
-            fetch_query = st.session_state.input_bot.return_response(st.session_state.messages, prompt)
+        with st.spinner("Loading..."):
+            fetch_query = st.session_state.input_bot.return_response(
+                st.session_state.messages, prompt
+            )
             thought_process = st.session_state.fetch_bot.process(fetch_query)
-        with st.spinner("Generating response..."):
             response = st.session_state.output_bot.return_response(prompt)
-            urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\), ]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', response)
+            urls = re.findall(
+                r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\), ]|(?:%[0-9a-fA-F][0-9a-fA-F]))+",
+                response,
+            )
             st.session_state.links.clear()
             st.session_state.links.extend(urls)
             st.markdown(response, unsafe_allow_html=True)

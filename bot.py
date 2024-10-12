@@ -1,46 +1,70 @@
 from llama_index.llms.ollama import Ollama
 from llama_index.embeddings.ollama import OllamaEmbedding
-from llama_index.core import PromptTemplate, Settings, VectorStoreIndex, Document, SimpleDirectoryReader, get_response_synthesizer, StorageContext
+from llama_index.core import (
+    PromptTemplate,
+    Settings,
+    VectorStoreIndex,
+    SimpleDirectoryReader,
+    StorageContext,
+)
 from llama_index.core.memory import ChatMemoryBuffer
 from llama_index.core.agent import ReActAgent
-from llama_index.core.tools import BaseTool, FunctionTool
-from llama_index.core.llms import ChatMessage, MessageRole
-from llama_index.core.query_engine import JSONalyzeQueryEngine
-from llama_index.core.storage.chat_store import SimpleChatStore
+from llama_index.core.tools import FunctionTool
 from llama_index.core.llms import ChatMessage
-from llama_index.core.retrievers import VectorIndexRetriever
-from llama_index.core.query_engine import RetrieverQueryEngine
-import re
-import ast
-
+from llama_index.core.storage.chat_store import SimpleChatStore
 from llama_index.vector_stores.qdrant import QdrantVectorStore
+from httpx import Timeout
+import ast
 import qdrant_client
 import streamlit as st
-import duckduckgo_search
+
 
 class InputBot:
     def __init__(self):
-        self.llm = Ollama(model="llama3.1:latest", base_url="http://127.0.0.1:11434", temperature=0, )
-        self.header_prompt =  """
+        self.llm = Ollama(
+            model="llama3.1:latest",
+            base_url="http://127.0.0.1:11434",
+            temperature=0,
+        )
+        self.header_prompt = """
                 Do these step below no matter what language the user is speaking
-                ## Instruction / Instruksi
-                1. Receive the latest user prompt. / Terima prompt pengguna terbaru.
-                1. Identify the language of the conversation from user's prompt, determine the language the user is speaking. / Tentukan bahasa yang digunakan pengguna.
-                2. Understand the user's prompt, summarize what the user wants to know or ask into one or more topics. / Pahami prompt pengguna dan rangkumkan menjadi topik.
-                3. Return the topics in the user's language in the format of python list such as ["Give me sources about {topic 1}", "Give me sources about {topic 2}", ...] / Berikan respon topik tersebut di menggunakan bahasa pengguna dalam format list python seperti ["Berikan saya sumber tentang {topik 1}", "Berikan saya sumber tentang {topik 2}", ...]
+                ## Instruction in English
+                1. Receive the latest user prompt.
+                2. Determine the language from the latest prompt.
+                3. Understand the latest prompt, summarize what the user wants to know or ask into one or more topics.
+                4. Return the topics as a response (ONLY IN A SINGLE LANGUAGE USING THE LATEST'S PROMPT LANGUAGE) in the format of python list like this ["Give me sources about {topic 1}", "Give me sources about {topic 2}", ...]
+                ## Example 1
+                User : I want to learn how to cook mussel
+                Assistant : ["Give me video about how to cook mussel", "Give me sources about healthy ways of eating mussel"]
+
+                ## Example 2
+                User: Saya ingin belajar cara masak kerang
+                Assistant: ["Berikan saya video tentang cara memasak kerang", "Berikan saya sumber tentang cara sehat memasak kerang"]
             """
 
     def return_response(self, message, prompt):
         prompt = f"{self.header_prompt}\n{prompt}"
         input_list = message.copy()
         input_list.append({"role": "user", "content": prompt})
-        chat_messages = list(map(lambda item: ChatMessage(role=item['role'], content=item['content']), input_list))
+        chat_messages = list(
+            map(
+                lambda item: ChatMessage(role=item["role"], content=item["content"]),
+                input_list,
+            )
+        )
         response = self.llm.chat(chat_messages)
-        return response.message.content[response.message.content.rfind("[") : response.message.content.rfind("]") + 1]
+        print(response.message.content)
+        return response.message.content[
+            response.message.content.rfind("[") : response.message.content.rfind("]")
+            + 1
+        ]
+
 
 class FetchBot:
     def __init__(self, input_methods):
-        self.llm = Ollama(model="llama3.1:latest", base_url="http://127.0.0.1:11434", temperature=0)
+        self.llm = Ollama(
+            model="llama3.1:latest", base_url="http://127.0.0.1:11434", temperature=0
+        )
         react_system_header_str = """
 
             You are designed to be able to search and access any information source such as publication papers.
@@ -88,7 +112,7 @@ class FetchBot:
             - You MUST obey the function signature of each tool. Do NOT pass in no arguments if the function expects arguments.
             - ALL of the tools ONLY accept ONE (1) input that is a string called keyword.
             - keyword MUST be from the same language as what the user is using.
-            - If the tool throw an error, you should either try with DIFFERENT keyword or GIVE UP.
+            - If you observe ERROR, you should STOP and GIVE UP.
 
             ## Current Conversation
             Below is the current conversation consisting of interleaving human and assistant messages.
@@ -119,17 +143,22 @@ class FetchBot:
         for prompt in prompts:
             return self.agent.chat(prompt)
 
+
 class OutputBot:
-    def __init__(self, llm="llama3.1:latest", embedding_model="intfloat/multilingual-e5-large"):
+    def __init__(
+        self, llm="llama3.1:latest", embedding_model="intfloat/multilingual-e5-large"
+    ):
         self.system_prompt = """
                 You are a multilingual source finder magician with access to all of the information sources on earth.
 
                 ## Instruction
                 1. You help users find the source they needed for an information.
-                2. Your task is to provide source's title for the user along with the source's detail (except for title) from your context.
-                3. If the user ask something else outside of searching publication, try to use your context to answer the user's question while providing the source or link of that context.
-                4. You can also find and provide another related sources to the response. The related sources can be article, video, or image link.
-                5. ALWAYS provide a link as a source for your answer.
+                2. Your task is to provide source's TITLE for the user along with the source's DETAIL (except for title) from your context.
+                3. The source's TITLE and DETAIL must be from the SAME DOCUMENT.
+                4. If the user ask something else outside of searching publication, try to use your context to answer the user's question while providing the source or link of that context.
+                5. You can also find and provide another related sources to the response. The related sources can be article, video, or image link.
+                6. ALWAYS provide a link as a source for your answer.
+                7. Please provide a concise, well-structured, and visually clear response using bullet points, bold headings, and short paragraphs where appropriate.
 
                 Here are the relevant documents filled with title, links and other details for your context: {context_str}
                 Answer the user quere here : {query_str} by following the instruction above.  
@@ -142,22 +171,36 @@ class OutputBot:
     def load_data(self):
         reader = SimpleDirectoryReader(input_dir="./docs", recursive=True)
         documents = reader.load_data()
-        client = qdrant_client.QdrantClient(
-            url=st.secrets["qdrant"]["connection_url"], 
-            api_key=st.secrets["qdrant"]["api_key"],
-        )
-        vector_store = QdrantVectorStore(client=client, collection_name="Documents")
-        storage_context = StorageContext.from_defaults(vector_store=vector_store)
-        return VectorStoreIndex.from_documents(documents, storage_context=storage_context)
+        try:
+            client = qdrant_client.QdrantClient(
+                url=st.secrets["qdrant"]["connection_url"],
+                api_key=st.secrets["qdrant"]["api_key"],
+                timeout=Timeout(timeout=5.0),
+            )
+            vector_store = QdrantVectorStore(
+                client=client,
+                collection_name="Documents"
+            )
+            storage_context = StorageContext.from_defaults(vector_store=vector_store)
+            return VectorStoreIndex.from_documents(
+                documents, storage_context=storage_context
+            )
+        except:
+            return VectorStoreIndex.from_documents(documents)
 
     def set_setting(self, llm, embedding_model):
         self.llm = Ollama(model=llm, base_url="http://127.0.0.1:11434")
-        Settings.embed_model = OllamaEmbedding(base_url="http://127.0.0.1:11434", model_name="mxbai-embed-large:latest")
-
+        Settings.embed_model = OllamaEmbedding(
+            base_url="http://127.0.0.1:11434",
+            model_name="mxbai-embed-large:latest"
+        )
         return Settings
 
     def set_chat_history(self, messages):
-        self.chat_history = [ChatMessage(role=message["role"], content=message["content"]) for message in messages]
+        self.chat_history = [
+            ChatMessage(role=message["role"], content=message["content"])
+            for message in messages
+        ]
         self.chat_store.store = {"chat_history": self.chat_history}
         self.refresh_memory()
 
@@ -165,7 +208,11 @@ class OutputBot:
         self.chat_store = SimpleChatStore()
 
     def refresh_memory(self):
-        self.memory = ChatMemoryBuffer.from_defaults(chat_store=self.chat_store, chat_store_key="chat_history", token_limit=16000)
+        self.memory = ChatMemoryBuffer.from_defaults(
+            chat_store=self.chat_store,
+            chat_store_key="chat_history",
+            token_limit=16000
+        )
 
     def return_response(self, prompt):
         text_qa_template = PromptTemplate(self.system_prompt)
