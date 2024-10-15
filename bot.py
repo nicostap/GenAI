@@ -26,21 +26,22 @@ class InputBot:
             base_url="http://127.0.0.1:11434",
             temperature=0,
         )
-        self.header_prompt = """
-                Do these step below no matter what language the user is speaking
-                ## Instruction in English
-                1. Receive the latest user prompt.
-                2. Determine the language from the latest prompt.
-                3. Understand the latest prompt, summarize what the user wants to know or ask into one or more topics.
-                4. Return the topics as a response (ONLY IN A SINGLE LANGUAGE USING THE LATEST'S PROMPT LANGUAGE) in the format of python list like this ["Give me sources about {topic 1}", "Give me sources about {topic 2}", ...]
-                ## Example 1
-                User : I want to learn how to cook mussel
-                Assistant : ["Give me video about how to cook mussel", "Give me sources about healthy ways of eating mussel"]
+        self.header_prompt =  """
+                Here is ONE instruction you need to follow in TWO different languages so you can understand it.
 
-                ## Example 2
-                User: Saya ingin belajar cara masak kerang
-                Assistant: ["Berikan saya video tentang cara memasak kerang", "Berikan saya sumber tentang cara sehat memasak kerang"]
+                ## Instruksi Dalam Bahasa Indonesia
+                1. Terima prompt pengguna.
+                2. Tentukan bahasa yang digunakan pengguna.
+                3. Pahami prompt pengguna dan rangkumkan menjadi topik.
+                4. Berikan respon topik tersebut di menggunakan bahasa pengguna dalam format list python seperti ["Berikan saya sumber tentang {topik 1}", "Berikan saya sumber tentang {topik 2}", ...]
+
+                ## Instruction
+                1. Receive the user prompt.
+                2. Identify the language of the conversation from the user's prompt, determine the language the user is speaking.
+                3. Understand the user's prompt, summarize what the user wants to know or ask into one or more topics.
+                4. Return the topics in the user's language in the format of python list such as ["Give me sources about {topic 1}", "Give me sources about {topic 2}", ...]
             """
+
 
     def return_response(self, message, prompt):
         prompt = f"{self.header_prompt}\n{prompt}"
@@ -138,8 +139,14 @@ class FetchBot:
         self.agent.update_prompts({"agent_worker:system_prompt": react_system_prompt})
 
     def process(self, prompt_string):
-        prompts = ast.literal_eval(prompt_string)
-        # prompts = re.findall(r'\"(.*?)\"', prompt_string)
+        # Instead of evaluating the input, check if it is already a valid list or string
+        if isinstance(prompt_string, str):
+            # Wrap the string in a list if it's a single string
+            prompts = [prompt_string]
+        else:
+            # Otherwise, assume it is a list of prompts
+            prompts = prompt_string
+            
         for prompt in prompts:
             return self.agent.chat(prompt)
 
