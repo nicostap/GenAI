@@ -1,0 +1,5 @@
+fastembed_cache/
+persist/
+pycache/
+.ipynb_checkpoints/
+__pycache__/

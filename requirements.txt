@@ -3,6 +3,18 @@ llama-index-embeddings-fastembed
 llama-index-llms-ollama
 llama-index-vector-stores-qdrant
 
+llama-index-embeddings-ollama
+llama-index-retrievers-bm25
+
 qdrant_client
 fastembed
 streamlit==1.32.2
+scholarly
+python-dotenv
+sqlite-utils
+
+beautifulsoup4
+duckduckgo-search
+requests
+
+crawl4ai
