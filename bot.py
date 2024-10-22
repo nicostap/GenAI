@@ -27,21 +27,18 @@ class InputBot:
             temperature=0,
         )
         self.header_prompt =  """
-                ## Context
-                You will receive an input query, you MUST process this query and return the correct response according to the instruction listed below.
-                FOLLOW the instruction's response format
-
+                Here is ONE instruction you need to follow in TWO different languages so you can understand it.
                 ## Instruksi Dalam Bahasa Indonesia
                 1. Terima input query
                 2. Tentukan bahasa yang digunakan input query.
-                3. Pahami input query dan rangkumkan menjadi beberapa topik.
-                4. Response format : "["Berikan saya sumber tentang {topik 1}", "Berikan saya sumber tentang {topik 2}", ...]"
+                3. Pahami input query dan rangkumkan menjadi beberapa topik. Tentukan jenis media sumber yang pengguna ingin cari, jika tidak dispesifikan maka jenis media adalah "sumber"
+                4. Response format : "["Berikan saya {video/web/gambar/publikasi/sumber} tentang {topik 1}", "Berikan saya {video/web/gambar/publikasi/sumber} tentang {topik 2}", ...]"
 
                 ## Instruction
                 1. Receive the input query
                 2. Identify the language of the conversation from the input query, determine the language the query uses.
-                3. Understand the input query, summarize what the query wants to know or ask into one or more topics.
-                4. Response format : "["Give me sources about {topic 1}", "Give me sources about {topic 2}", ...]"
+                3. Understand the input query, summarize what the query wants to know or ask into one or more topics. Decice which media format the user is seeking, if it's not specififed the media format is "sources"
+                4. Response format : "["Give me {videos/webs/pictures/publications/sources} about {topic 1}", "Give me {videos/webs/pictures/publications/sources} about {topic 2}", ...]"
 
                 Below is the input query you will receive and process:
             """
@@ -57,7 +54,6 @@ class InputBot:
                 input_list,
             )
         )
-        print(chat_messages)
         response = self.llm.chat(chat_messages)
         print(response.message.content)
         return response.message.content[
@@ -103,12 +99,7 @@ class FetchBot:
             ```
             Observation: tool response
             ```
-            If you find ERROR, you MUST STOP and must response in the following format:
-            ```
-            Thought: Observation error.
-            Answer: I'll stop now.
-            ```
-            If you don't find ERROR, you should keep repeating the above format until you have enough information
+            You should keep repeating the above format until you have enough information
             to answer the question without using any more tools. At that point, you MUST respond
             in the one of the following two formats:
             ```
@@ -123,7 +114,7 @@ class FetchBot:
             - You MUST obey the function signature of each tool. Do NOT pass in no arguments if the function expects arguments.
             - ALL of the tools ONLY accept ONE (1) input that is a string called keyword.
             - keyword MUST be from the same language as what the user is using.
-
+            - If you observe ERROR, you should STOP and GIVE UP.
 
             ## Current Conversation
             Below is the current conversation consisting of interleaving human and assistant messages.
@@ -170,12 +161,12 @@ class OutputBot:
 
                 ## Instruction
                 1. You help users find the source they needed for an information.
-                2. Your task is to provide source's TITLE and COMPLETE LINK for the user along with the rest of the source's property from your context.
-                3. The source's TITLE and the COMPLETE LINK must be from the SAME DOCUMENT.
-                4. If the user ask something else outside of searching for sources, try to use your context to answer the user's question while providing the COMPLETE LINK of that context.
-                5. You can also find and provide another related sources to the response. The related sources can be article, video, or image COMPLETE LINK.
-                6. Please provide a concise, well-structured, and visually clear response using bullet points, bold headings, and short paragraphs where appropriate.
-                7. RESPONSE using the SAME LANGUAGE as the user's. Jika user berbicara dengan bahasa Indonesia, jawab dengan bahasa Indonesia. 
+                2. Your task is to provide source's TITLE for the user along with the source's DETAIL (except for title) from your context.
+                3. The source's TITLE and DETAIL must be from the SAME DOCUMENT.
+                4. If the user ask something else outside of searching publication, try to use your context to answer the user's question while providing the source or link of that context.
+                5. You can also find and provide another related sources to the response. The related sources can be article, video, or image link.
+                6. ALWAYS provide a link as a source for your answer.
+                7. Please provide a concise, well-structured, and visually clear response using bullet points, bold headings, and short paragraphs where appropriate.
 
                 Here are the relevant documents filled with title, links and other details for your context: {context_str}
                 Answer the user quere here : {query_str} by following the instruction above.  
