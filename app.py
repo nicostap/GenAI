@@ -2,14 +2,20 @@ import re
 import streamlit as st
 from scholarly import scholarly
 from collections import deque
-from bot import InputBot, FetchBot, OutputBot
+from bot import InputBot, FetchBot, OutputBot, AnswerBot, TriageBot
 from llama_index.core import Document
 from duckduckgo_search import AsyncDDGS
 import requests
 from bs4 import BeautifulSoup
 import time
 from crawl4ai import WebCrawler
+from PIL import Image
+from io import BytesIO
+from ollama import generate
+import json
 
+# Toggle Feature
+SCREENSHOOT_WEB = False
 
 # Initialize everything
 st.set_page_config(
@@ -28,6 +34,10 @@ if "input_bot" not in st.session_state:
     st.session_state.input_bot = InputBot()
 if "output_bot" not in st.session_state:
     st.session_state.output_bot = OutputBot()
+if "answer_bot" not in st.session_state:
+    st.session_state.answer_bot = AnswerBot(st.session_state.output_bot.index)
+if "triage_bot" not in st.session_state:
+    st.session_state.triage_bot = TriageBot()
 if "links" not in st.session_state:
     st.session_state.links = []
 if "crawler" not in st.session_state:
@@ -43,22 +53,90 @@ def title_to_variable(title):
     return title
 
 
-def save_to_index(content, indentifier):
+def is_url_dead(url):
+    try:
+        # Check with HEAD request
+        head_response = requests.head(url, timeout=5)
+        if head_response.status_code == 404 or head_response.status_code >= 500:
+            return True
+
+        # Check with GET request
+        get_response = requests.get(url, timeout=5)
+        if "404" in get_response.text.lower() or "not found" in get_response.text.lower():
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def is_image_dead(url):
+    if not is_image_link(url):
+        return True
+
+    try:
+        response = requests.get(url, timeout=5)
+        if response.status_code == 404 or response.status_code >= 500:
+            return True
+
+        # Check Content-Type header
+        content_type = response.headers.get("Content-Type", "").lower()
+        if not content_type.startswith("image/"):
+            return True
+
+        image_data = response.content
+        try:
+            Image.open(BytesIO(image_data)).verify()
+        except Exception:
+            return True
+
+        return False
+    except Exception:
+        return False
+
+
+def is_video_dead(url):
+    if not is_video_link(url):
+        return True
+
+    try:
+        if "youtu.be" in url:
+            video_id = url.split("/")[-1]
+            url = f"https://www.youtube.com/embed/{video_id}"
+        elif "watch?v=" in url:
+            video_id = url.split("watch?v=")[-1]
+            url = f"https://www.youtube.com/embed/{video_id}"
+
+        response = requests.get(url, timeout=10)
+        if response.status_code == 404 or response.status_code >= 500:
+            return True
+
+        if "UNPLAYABLE" in response.text:
+            return True
+
+        return False
+    except Exception:
+        return False
+
+
+def save_to_index(content, indentifier, url, url_checker=None):
+    url_checker = url_checker or is_url_dead
+    if url_checker(url):
+        return
+
     doc_id = title_to_variable(indentifier)
+    metadata = {"filename": doc_id, "timestamp": int(time.time())}
+    metadata.update(content)
     doc = Document(
-        text=content,
+        text=json.dumps(content),
         id_=doc_id,
-        metadata={"filename": doc_id, "timestamp": int(time.time())},
+        metadata=metadata,
     )
-    st.session_state.output_bot.index.insert(doc)
+    st.session_state.output_bot.insert_doc(doc)
     st.session_state.track_index.append(doc_id)
 
-    # If context is full, pop old ones
-    if len(st.session_state.track_index) > 20:
+    if len(st.session_state.track_index) > 100:
         old_doc_id = st.session_state.track_index.popleft()
-        st.session_state.output_bot.index.delete_ref_doc(
-            old_doc_id, delete_from_docstore=True
-        )
+        st.session_state.output_bot.delete_doc(old_doc_id)
 
 
 def scrape_page(url):
@@ -76,10 +154,13 @@ def scrape_page(url):
 
         # Example: Extract all paragraphs
         paragraphs = soup.find_all("p")
+        result = ""
         for p in paragraphs:
-            print(p.get_text())
+            result += p.get_text() + "\n"
+        return result
     else:
         print(f"Failed to retrieve {url}: {response.status_code}")
+        return "Failed to fetch"
 
 
 async def search_video(keyword: str) -> str:
@@ -112,19 +193,18 @@ async def search_video(keyword: str) -> str:
         scrape_result = scrape_page(content)
 
         # Constructing the output
-        result = (
-            f"   *Type:* Video\n"
-            f"   *Title:* {title}\n"
-            f"   *Link:* {content}\n"
-            f"   *Description:* {description}\n"
-            f"   *Content:* {scrape_result}\n"
-            f"   *Publisher:* {publisher}\n"
-            f"   *Uploader:* {uploader}\n"
-            f"   *Embed_URL:* {embed_url} \n\n"
-        )
-
-        output += result
-        save_to_index(result, title)
+        result = {
+            "Type": "Video",
+            "Title": title,
+            "Link": content,
+            "Description": description,
+            "Content": scrape_result,
+            "Publisher": publisher,
+            "Uploader": uploader,
+            "Embed_URL": embed_url,
+        }
+        output += json.dumps(result)
+        save_to_index(result, title, embed_url, is_video_dead)
 
     return output
 
@@ -150,23 +230,23 @@ async def search_image(keyword: str) -> str:
     for result in search_query:
         # Extracting information from the result
         title = result["title"]
-        url = result["url"]
         image = result["image"]
 
+        if not is_image_link(image):
+            continue
+
         # Scrape more info from href
-        scrape_result = scrape_page(url)
+        content = annotate_image(image)
 
         # Constructing the output
-        result = (
-            f"   *Type:* Image\n"
-            f"   *Title:* {title}\n"
-            f"   *Image URL:* {image}\n"
-            f"   *Link:* {link}\n"
-            f"   *Content:* {scrape_result}\n\n"
-        )
-
-        output += result
-        save_to_index(result, title)
+        result = {
+            "Type": "Image",
+            "Title": title,
+            "Link": image,
+            "Content": content,
+        }
+        output += json.dumps(result)
+        save_to_index(result, title, image, is_image_dead)
 
     return output
 
@@ -200,16 +280,15 @@ async def search_internet(keyword: str) -> str:
         scrape_result = scrape_page(href)
 
         # Constructing the output
-        result = (
-            f"   *Type:* Webpage\n"
-            f"   *Title:* {title}\n"
-            f"   *Link:* {href}\n"
-            f"   *Body:* {body}\n"
-            f"   *Detail:* {scrape_result}\n\n"
-        )
-
-        output += result
-        save_to_index(result, title)
+        result = {
+            "Type": "Webpage",
+            "Title": title,
+            "Link": href,
+            "Body": body,
+            "Detail": scrape_result,
+        }
+        output += json.dumps(result)
+        save_to_index(result, title, href)
 
     return output
 
@@ -224,7 +303,7 @@ async def search_publications(keyword: str) -> str:
     output = f"# Publication Search Results for '{keyword}'\n"
 
     # Iterate over search results, limiting to the first 4
-    for i in range(4):
+    for i in range(10):
         try:
             result = next(search_query)
         except StopIteration:
@@ -241,16 +320,16 @@ async def search_publications(keyword: str) -> str:
         link = result.get("pub_url", "No link available")
 
         # Constructing the output
-        result = (
-            f"   *Type:* Publication\n"
-            f"   *Title:* {title}\n"
-            f"   *Link:* {link}\n"
-            f"   *Abstract:* {abstract}\n"
-            f"   *Publication info:* {pub_info}\n"
-            f"   *Cited by:* {cited_by_count}\n\n"
-        )
-        output += result
-        save_to_index(result, title)
+        result = {
+            "Type": "Publication",
+            "Title": title,
+            "Link": link,
+            "Abstract": abstract,
+            "Publication_info": pub_info,
+            "Cited_by": cited_by_count,
+        }
+        output += json.dumps(result)
+        save_to_index(result, title, link)
 
     return output
 
@@ -275,6 +354,29 @@ if "fetch_bot" not in st.session_state:
     st.session_state.fetch_bot = FetchBot(
         [search_publications, search_internet, search_video, search_image]
     )
+
+
+def annotate_image(image_url):
+    try:
+        response = requests.get(image_url, timeout=5)
+        response.raise_for_status()
+        image_bytes = BytesIO(response.content).getvalue()
+    except requests.RequestException:
+        return ''
+
+    if not image_bytes:
+        return ''
+
+    context = ''
+    for response in generate(
+        model='llava:13b-v1.6',
+        prompt='Describe this image you are seeing it in person, do not say the word "image" :',
+        images=[image_bytes],
+        stream=True
+    ):
+        context += response['response']
+    return context
+
 
 # Main Program
 st.title("📚 SourceBot")
@@ -303,30 +405,29 @@ with st.sidebar.container():
             st.video(link)
         else:
             # Display as a regular link button
-            image_result = st.session_state.crawler.run(url=link, screenshot=True)
-            image_data = image_result.screenshot
-            if image_data is not None:
-                st.markdown(
-                    f"""
-                        <a href="{link}" target="_blank">
-                            <div style="width: 100%; border-radius: 20px; max-height: 200px; overflow:hidden;">
-                                <img src="data:image/png;base64,{image_data}" alt="Screenshot" style="width: 101%;">
-                            </div>
-                        </a>
-                    """,
-                    unsafe_allow_html=True,
-                )
+            if SCREENSHOOT_WEB:
+                image_result = st.session_state.crawler.run(url=link, screenshot=True)
+                image_data = image_result.screenshot
+                if image_data is not None:
+                    st.markdown(
+                        f"""
+                            <a href="{link}" target="_blank">
+                                <div style="width: 100%; border-radius: 20px; max-height: 200px; overflow:hidden;">
+                                    <img src="data:image/png;base64,{image_data}" alt="Screenshot" style="width: 101%;">
+                                </div>
+                            </a>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.link_button(match.group("domain"), link)
             else:
                 st.link_button(match.group("domain"), link)
-        st.markdown('<br/>', unsafe_allow_html=True)
 
-# Chat input from user
 if prompt := st.chat_input("What is up?"):
-    # Display user message
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Add user message to chat history
     st.session_state.messages.append({"role": "user", "content": prompt})
 
     with st.chat_message("assistant"):
@@ -335,13 +436,23 @@ if prompt := st.chat_input("What is up?"):
                 st.session_state.messages, prompt
             )
             thought_process = st.session_state.fetch_bot.process(fetch_query)
-            response = st.session_state.output_bot.return_response(prompt)
+            triage_result = st.session_state.triage_bot.return_response(st.session_state.messages, prompt)
+
+            response = ""
+            if "0" in triage_result:
+                response = st.session_state.answer_bot.return_response(prompt)
+                response += "\n\nAnswered by AnswerBot"
+            elif "1" in triage_result:
+                response = st.session_state.output_bot.return_response(prompt)
+                response += "\n\nAnswered by OutputBot"
+            else:
+                response = "Sorry I could not understand your request"
+
             urls = re.findall(
                 r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\), ]|(?:%[0-9a-fA-F][0-9a-fA-F]))+",
                 response,
             )
             st.session_state.links.clear()
             st.session_state.links.extend(urls)
-            st.markdown(response, unsafe_allow_html=True)
     st.session_state.messages.append({"role": "assistant", "content": response})
     st.rerun()

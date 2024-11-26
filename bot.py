@@ -13,32 +13,30 @@ from llama_index.core.tools import FunctionTool
 from llama_index.core.llms import ChatMessage
 from llama_index.core.storage.chat_store import SimpleChatStore
 from llama_index.vector_stores.qdrant import QdrantVectorStore
+from llama_index.core.indices.empty import EmptyIndex
 from httpx import Timeout
-import ast
 import qdrant_client
 import streamlit as st
-
+from llama_index.core import VectorStoreIndex, get_response_synthesizer
+from llama_index.core.retrievers import VectorIndexRetriever
+from llama_index.core.query_engine import RetrieverQueryEngine
+from llama_index.core import SummaryIndex, Document
+from llama_index.core import PropertyGraphIndex
 
 class InputBot:
     def __init__(self):
         self.llm = Ollama(
-            model="llama3.1:latest",
+            model="qwen2.5-coder:32b-instruct-q5_1",
             base_url="http://127.0.0.1:11434",
             temperature=0,
+            request_timeout=3000.0,
         )
         self.header_prompt =  """
-                Here is ONE instruction you need to follow in TWO different languages so you can understand it.
-                ## Instruksi Dalam Bahasa Indonesia
-                1. Terima input query
-                2. Tentukan bahasa yang digunakan input query.
-                3. Pahami input query dan rangkumkan menjadi beberapa topik. Tentukan jenis media sumber yang pengguna ingin cari, jika tidak dispesifikan maka jenis media adalah "sumber"
-                4. Response format : "["Berikan saya {video/web/gambar/publikasi/sumber} tentang {topik 1}", "Berikan saya {video/web/gambar/publikasi/sumber} tentang {topik 2}", ...]"
-
                 ## Instruction
                 1. Receive the input query
                 2. Identify the language of the conversation from the input query, determine the language the query uses.
-                3. Understand the input query, summarize what the query wants to know or ask into one or more topics. Decice which media format the user is seeking, if it's not specififed the media format is "sources"
-                4. Response format : "["Give me {videos/webs/pictures/publications/sources} about {topic 1}", "Give me {videos/webs/pictures/publications/sources} about {topic 2}", ...]"
+                3. Understand the input query, summarize what the query wants to know or ask into one or more topics. Decice which media format the user is seeking, if it's not specififed the media format is "webs"
+                4. Response format : "["Give me {videos/webs/pictures/publications} about {topic 1}", "Give me {videos/webs/pictures/publications} about {topic 2}", ...]"
 
                 Below is the input query you will receive and process:
             """
@@ -65,7 +63,8 @@ class InputBot:
 class FetchBot:
     def __init__(self, input_methods):
         self.llm = Ollama(
-            model="llama3.1:latest", base_url="http://127.0.0.1:11434", temperature=0
+            model="qwen2.5-coder:32b-instruct-q5_1", base_url="http://127.0.0.1:11434", temperature=0,
+            request_timeout=3000.0
         )
         react_system_header_str = """
 
@@ -99,7 +98,7 @@ class FetchBot:
             ```
             Observation: tool response
             ```
-            You should keep repeating the above format until you have enough information
+            You should keep repeating the above format until you have more than enough information
             to answer the question without using any more tools. At that point, you MUST respond
             in the one of the following two formats:
             ```
@@ -147,32 +146,27 @@ class FetchBot:
         else:
             # Otherwise, assume it is a list of prompts
             prompts = prompt_string
-            
         for prompt in prompts:
             return self.agent.chat(prompt)
 
 
 class OutputBot:
-    def __init__(
-        self, llm="llama3.1:latest", embedding_model="intfloat/multilingual-e5-large"
-    ):
-        self.system_prompt = """
-                You are a multilingual source finder magician with access to all of the information sources on earth.
+    def __init__(self, index=None, system_prompt=None):
+        self.system_prompt = system_prompt or """
+            You are a multilingual source finder magician with access to all of the information sources on earth.
 
-                ## Instruction
-                1. You help users find the source they needed for an information.
-                2. Your task is to provide source's TITLE for the user along with the source's DETAIL (except for title) from your context.
-                3. The source's TITLE and DETAIL must be from the SAME DOCUMENT.
-                4. If the user ask something else outside of searching publication, try to use your context to answer the user's question while providing the source or link of that context.
-                5. You can also find and provide another related sources to the response. The related sources can be article, video, or image link.
-                6. ALWAYS provide a link as a source for your answer.
-                7. Please provide a concise, well-structured, and visually clear response using bullet points, bold headings, and short paragraphs where appropriate.
+            ## Instruction
+            1. You help users find the source they needed for an information.
+            2. Your task is to provide source's TITLE for the user along with the source's DETAIL (except for title) from your context.
+            3. The source's TITLE and DETAIL must be from the SAME DOCUMENT.
+            4. ALWAYS provide a link as a source for your answer.
+            5. Please provide your response in a concise, well-structured, and visually clear response using bullet points and bold headings.
 
-                Here are the relevant documents filled with title, links and other details for your context: {context_str}
-                Answer the user quere here : {query_str} by following the instruction above.  
+            Here are the relevant documents filled with title, links and other details for your context: {context_str}
+            Answer the user quere here : {query_str} by following the instruction above.  
         """
-        self.Settings = self.set_setting(llm, embedding_model)
-        self.index = self.load_data()
+        self.Settings = self.set_setting()
+        self.index = index or self.load_data()
         self.create_chat_history()
         self.refresh_memory()
 
@@ -196,8 +190,8 @@ class OutputBot:
         except:
             return VectorStoreIndex.from_documents(documents)
 
-    def set_setting(self, llm, embedding_model):
-        self.llm = Ollama(model=llm, base_url="http://127.0.0.1:11434")
+    def set_setting(self):
+        self.llm = Ollama(model="qwen2.5-coder:32b-instruct-q5_1", base_url="http://127.0.0.1:11434", temperature=0, request_timeout=3000.0)
         Settings.embed_model = OllamaEmbedding(
             base_url="http://127.0.0.1:11434",
             model_name="mxbai-embed-large:latest"
@@ -225,9 +219,70 @@ class OutputBot:
     def return_response(self, prompt):
         text_qa_template = PromptTemplate(self.system_prompt)
         response = self.index.as_query_engine(
-            verbose=True,
+            # verbose=True,
             memory=self.memory,
             llm=self.llm,
             text_qa_template=text_qa_template,
         ).query(prompt)
         return response.response
+
+    def insert_doc(self, doc):
+        self.index.insert(doc)
+
+    def delete_doc(self, doc_id):
+        self.index.delete_ref_doc(
+            doc_id, delete_from_docstore=True
+        )
+
+
+class AnswerBot(OutputBot):
+    def __init__(self, index):
+        system_prompt = """
+                You are a multilingual answer giving magician with access to all of the webpage information on earth.
+                ## Instruction
+                1. You help users answer their question.
+                2. Your task is to search for documents with type "Webpage" from your context and answer to the user's question based on the documents's content.
+                3. Provide the source document's TITLE and LINK as well.
+                4. The source document's TITLE and LINK must be from the SAME DOCUMENT.
+                5. ALWAYS provide a link as a source for your answer.
+
+                Here are the relevant documents filled with title, links and other details for your context: {context_str}
+                Answer the user quere here : {query_str} by following the instruction above.
+        """
+        super().__init__(index, system_prompt)
+
+
+class TriageBot:
+    def __init__(self):
+        self.llm = Ollama(
+            model="qwen2.5-coder:32b-instruct-q5_1",
+            base_url="http://127.0.0.1:11434",
+            temperature=0,
+            request_timeout=3000.0
+        )
+        self.header_prompt =  """
+                ## Instruction
+                1. Receive and process the latest input query from user
+                2. Response with 1 if the user wants to search for sources (videos/webs/pictures/publications/sources)
+                3. Response with 0 if the user wants to ask questions.
+                4. Response format : "[0]" or "[1]"
+
+                Below is the input query you will receive and process:
+            """
+
+    def return_response(self, message, prompt):
+        prompt = f"{self.header_prompt}\n{prompt}"
+        input_list = message.copy()
+        input_list.append({"role": "user", "content": prompt})
+        chat_messages = list(
+            map(
+                lambda item: ChatMessage(role=item["role"], content=item["content"]),
+                input_list,
+            )
+        )
+        response = self.llm.chat(chat_messages)
+        print(response.message.content)
+        return response.message.content[
+            response.message.content.rfind("[") : response.message.content.rfind("]")
+            + 1
+        ]
