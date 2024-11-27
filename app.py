@@ -2,7 +2,7 @@ import re
 import streamlit as st
 from scholarly import scholarly
 from collections import deque
-from bot import InputBot, FetchBot, OutputBot, AnswerBot, TriageBot
+from bot import InputBot, FetchBot, ListBot, AnswerBot, TriageBot
 from llama_index.core import Document
 from duckduckgo_search import AsyncDDGS
 import requests
@@ -32,10 +32,10 @@ if "messages" not in st.session_state:
     ]
 if "input_bot" not in st.session_state:
     st.session_state.input_bot = InputBot()
-if "output_bot" not in st.session_state:
-    st.session_state.output_bot = OutputBot()
+if "list_bot" not in st.session_state:
+    st.session_state.list_bot = ListBot()
 if "answer_bot" not in st.session_state:
-    st.session_state.answer_bot = AnswerBot(st.session_state.output_bot.index)
+    st.session_state.answer_bot = AnswerBot(st.session_state.list_bot.index)
 if "triage_bot" not in st.session_state:
     st.session_state.triage_bot = TriageBot()
 if "links" not in st.session_state:
@@ -45,7 +45,6 @@ if "crawler" not in st.session_state:
     st.session_state.crawler.warmup()
 
 
-# Special dependencies
 def title_to_variable(title):
     title = title.lower()
     title = title.replace(" ", "_")
@@ -131,12 +130,12 @@ def save_to_index(content, indentifier, url, url_checker=None):
         id_=doc_id,
         metadata=metadata,
     )
-    st.session_state.output_bot.insert_doc(doc)
+    st.session_state.list_bot.insert_doc(doc)
     st.session_state.track_index.append(doc_id)
 
     if len(st.session_state.track_index) > 100:
         old_doc_id = st.session_state.track_index.popleft()
-        st.session_state.output_bot.delete_doc(old_doc_id)
+        st.session_state.list_bot.delete_doc(old_doc_id)
 
 
 def scrape_page(url):
@@ -262,7 +261,6 @@ async def search_internet(keyword: str) -> str:
     7. cats -site:example.com -> Pages about cats, excluding example.com
     8. intitle:dogs -> Page title includes the word "dogs"
     9. inurl:cats -> Page url includes the word "cats"
-
     """
     output = f"# Internet Search Result for '{keyword}' text \n"
 
@@ -271,15 +269,12 @@ async def search_internet(keyword: str) -> str:
     )
 
     for result in search_query:
-        # Extracting information from the result
         title = result["title"]
         href = result["href"]
         body = result["body"]
 
-        # Scrape more info from href
         scrape_result = scrape_page(href)
 
-        # Constructing the output
         result = {
             "Type": "Webpage",
             "Title": title,
@@ -296,20 +291,16 @@ async def search_internet(keyword: str) -> str:
 async def search_publications(keyword: str) -> str:
     """Searches Google Scholar for publications based on the keyword given."""
 
-    # Initialize search query
     search_query = scholarly.search_pubs(keyword)
 
-    # Prepare output
     output = f"# Publication Search Results for '{keyword}'\n"
 
-    # Iterate over search results, limiting to the first 4
     for i in range(10):
         try:
             result = next(search_query)
         except StopIteration:
             break  # No more results
 
-        # Extracting information from the result
         title = result["bib"].get("title", "No title")
         author = ", ".join(result["bib"].get("author", ["Unknown author"]))
         pub_year = result["bib"].get("pub_year", "Unknown year")
@@ -319,7 +310,6 @@ async def search_publications(keyword: str) -> str:
         cited_by_count = result.get("num_citations", "Unknown")
         link = result.get("pub_url", "No link available")
 
-        # Constructing the output
         result = {
             "Type": "Publication",
             "Title": title,
@@ -334,12 +324,10 @@ async def search_publications(keyword: str) -> str:
     return output
 
 
-# Function to check if a link is an image
 def is_image_link(url):
     return url.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff"))
 
 
-# Function to check if a link is a YouTube video link
 def is_video_link(url):
     return (
         re.match(
@@ -370,7 +358,7 @@ def annotate_image(image_url):
     context = ''
     for response in generate(
         model='llava:13b-v1.6',
-        prompt='Describe this image you are seeing it in person, do not say the word "image" :',
+        prompt='Describe this image down to the details, do not use the word "image" :',
         images=[image_bytes],
         stream=True
     ):
@@ -382,11 +370,10 @@ def annotate_image(image_url):
 st.title("📚 SourceBot")
 st.markdown("Find any sources of information")
 
-# Display chat messages from history on app rerun
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
-st.session_state.output_bot.set_chat_history(st.session_state.messages)
+st.session_state.list_bot.set_chat_history(st.session_state.messages)
 
 st.sidebar.title("🔗 Saved Links")
 with st.sidebar.container():
@@ -396,15 +383,11 @@ with st.sidebar.container():
         match = re.match(
             r"(https?://)?(www\d?\.)?(?P<domain>[\w\.-]+\.\w+)(/\S*)?", link
         )
-        # Check if the link is an image or video
         if is_image_link(link):
-            # Display image link
             st.image(link, caption=match.group("domain"), use_column_width=True)
         elif is_video_link(link):
-            # Display video link
             st.video(link)
         else:
-            # Display as a regular link button
             if SCREENSHOOT_WEB:
                 image_result = st.session_state.crawler.run(url=link, screenshot=True)
                 image_data = image_result.screenshot
@@ -431,27 +414,30 @@ if prompt := st.chat_input("What is up?"):
     st.session_state.messages.append({"role": "user", "content": prompt})
 
     with st.chat_message("assistant"):
-        with st.spinner("Loading..."):
+        with st.spinner("Formulating input..."):
             fetch_query = st.session_state.input_bot.return_response(
                 st.session_state.messages, prompt
             )
+        with st.spinner("Fetching results..."):
             thought_process = st.session_state.fetch_bot.process(fetch_query)
+        with st.spinner("Formulating output..."):
             triage_result = st.session_state.triage_bot.return_response(st.session_state.messages, prompt)
-
             response = ""
             if "0" in triage_result:
                 response = st.session_state.answer_bot.return_response(prompt)
                 response += "\n\nAnswered by AnswerBot"
             elif "1" in triage_result:
-                response = st.session_state.output_bot.return_response(prompt)
-                response += "\n\nAnswered by OutputBot"
+                response = st.session_state.list_bot.return_response(prompt)
+                response += "\n\nAnswered by ListBot"
             else:
                 response = "Sorry I could not understand your request"
-
             urls = re.findall(
                 r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\), ]|(?:%[0-9a-fA-F][0-9a-fA-F]))+",
                 response,
             )
+            for i in range(len(urls)):
+                if ']' in urls[i]:
+                    urls[i] = urls[i].split(']')[0]
             st.session_state.links.clear()
             st.session_state.links.extend(urls)
     st.session_state.messages.append({"role": "assistant", "content": response})

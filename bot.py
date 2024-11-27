@@ -150,7 +150,7 @@ class FetchBot:
             return self.agent.chat(prompt)
 
 
-class OutputBot:
+class ListBot:
     def __init__(self, index=None, system_prompt=None):
         self.system_prompt = system_prompt or """
             You are a multilingual source finder magician with access to all of the information sources on earth.
@@ -235,7 +235,7 @@ class OutputBot:
         )
 
 
-class AnswerBot(OutputBot):
+class AnswerBot(ListBot):
     def __init__(self, index):
         system_prompt = """
                 You are a multilingual answer giving magician with access to all of the webpage information on earth.
